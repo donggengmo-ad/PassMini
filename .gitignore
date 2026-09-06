@@ -1,0 +1,25 @@
+# 环境与配置
+.env/
+.idea/
+.venv/
+/.codex/
+.DS_Store
+
+# 模型
+*.ckpt
+*.pkl
+*.joblib
+
+# 数据集
+*.csv
+data/
+
+# 编译产物
+*.pyc
+__pycache__/
+.pytest_cache/
+
+# 临时笔记
+docs/
+/output/
+/*output*/

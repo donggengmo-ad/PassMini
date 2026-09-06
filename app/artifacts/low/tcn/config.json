@@ -1,0 +1,42 @@
+{
+  "data": {
+    "dataset_path": "data/processed",
+    "tokenizer_path": "data/processed/tokenizer.json",
+    "output_dir": "output/autorg_tcn",
+    "train_limit": null,
+    "val_limit": null,
+    "test_limit": null
+  },
+  "model": {
+    "model_type": "tcn",
+    "embedding_dim": 64,
+    "channels": 128,
+    "kernel_size": 3,
+    "dilations": [
+      1,
+      2,
+      4
+    ]
+  },
+  "training": {
+    "batch_size": 512,
+    "num_epochs": 50,
+    "learning_rate": 0.001,
+    "max_norm": 1.0,
+    "seed": 42,
+    "scheduler": {
+      "name": "cosine",
+      "factor": 0.5,
+      "patience": 1,
+      "min_lr": 0.0,
+      "step_size": 1,
+      "gamma": 0.1,
+      "t_max": null,
+      "eta_min": 1e-06
+    }
+  },
+  "device": {
+    "mode": "formal_cuda",
+    "cuda_index": 0
+  }
+}

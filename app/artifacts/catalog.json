@@ -1,0 +1,104 @@
+{
+  "models": [
+    {
+      "id": "baseline-bigram",
+      "tier": "baseline",
+      "model_type": "bigram",
+      "display_name": "Bigram · Baseline",
+      "artifact_dir": "artifacts/baseline/bigram",
+      "parameter_count": 0,
+      "color": "#f4b860",
+      "enabled": true
+    },
+    {
+      "id": "low-gru",
+      "tier": "low",
+      "model_type": "gru",
+      "display_name": "GRU · Low",
+      "artifact_dir": "artifacts/low/gru",
+      "parameter_count": 188160,
+      "color": "#49d3b4",
+      "enabled": true
+    },
+    {
+      "id": "low-tcn",
+      "tier": "low",
+      "model_type": "tcn",
+      "display_name": "TCN · Low",
+      "artifact_dir": "artifacts/low/tcn",
+      "parameter_count": 137856,
+      "color": "#54a7ff",
+      "enabled": true
+    },
+    {
+      "id": "low-transformer",
+      "tier": "low",
+      "model_type": "transformer",
+      "display_name": "Transformer · Low",
+      "artifact_dir": "artifacts/low/transformer",
+      "parameter_count": 213888,
+      "color": "#a98bff",
+      "enabled": true
+    },
+    {
+      "id": "medium-gru",
+      "tier": "medium",
+      "model_type": "gru",
+      "display_name": "GRU · Medium",
+      "artifact_dir": "artifacts/medium/gru",
+      "parameter_count": 736768,
+      "color": "#2ca88f",
+      "enabled": false
+    },
+    {
+      "id": "medium-tcn",
+      "tier": "medium",
+      "model_type": "tcn",
+      "display_name": "TCN · Medium",
+      "artifact_dir": "artifacts/medium/tcn",
+      "parameter_count": 734720,
+      "color": "#337fc4",
+      "enabled": false
+    },
+    {
+      "id": "medium-transformer",
+      "tier": "medium",
+      "model_type": "transformer",
+      "display_name": "Transformer · Medium",
+      "artifact_dir": "artifacts/medium/transformer",
+      "parameter_count": 820992,
+      "color": "#8068cb",
+      "enabled": false
+    },
+    {
+      "id": "high-gru",
+      "tier": "high",
+      "model_type": "gru",
+      "display_name": "GRU · High",
+      "artifact_dir": "artifacts/high/gru",
+      "parameter_count": 2915328,
+      "color": "#18715f",
+      "enabled": false
+    },
+    {
+      "id": "high-tcn",
+      "tier": "high",
+      "model_type": "tcn",
+      "display_name": "TCN · High",
+      "artifact_dir": "artifacts/high/tcn",
+      "parameter_count": 2911232,
+      "color": "#215688",
+      "enabled": false
+    },
+    {
+      "id": "high-transformer",
+      "tier": "high",
+      "model_type": "transformer",
+      "display_name": "Transformer · High",
+      "artifact_dir": "artifacts/high/transformer",
+      "parameter_count": 3214848,
+      "color": "#5f489e",
+      "enabled": false
+    }
+  ]
+}

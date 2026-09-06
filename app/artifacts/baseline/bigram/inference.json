@@ -1,0 +1,4 @@
+{
+  "model_type": "bigram",
+  "alpha": 1.0
+}
