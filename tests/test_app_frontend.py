@@ -5,9 +5,11 @@ import numpy as np
 import pytest
 
 from app.frontend.catalog import load_catalog
+from app.frontend.probability_input import colored_password_html, probability_color
 from app.frontend.library import (
     CoverageData,
     SurprisalData,
+    TrainingHistory,
     load_coverage_data,
     load_generation_quality,
     load_surprisal_data,
@@ -26,8 +28,11 @@ from app.frontend.playground import (
     complete_with_models,
     generate_with_models,
     score_models,
+    trace_character_probabilities,
 )
 from app.frontend.warehouse import get_runtime_model, read_model_metadata
+from scripts.models import AutoregressiveBigram
+from scripts.tokenizer import CharTokenizer
 
 
 def test_default_catalog_and_artifacts_are_consistent():
@@ -238,6 +243,37 @@ def test_coverage_chart_uniformly_limits_points_and_keeps_endpoints():
     assert rows[-1]["Attempts"] == 10_001
 
 
+def test_chart_positive_axes_start_at_zero_and_coverage_uses_percentages():
+    history = TrainingHistory(
+        train_loss=np.asarray([2.0, 1.5]),
+        valid_loss=np.asarray([2.1, 1.6]),
+        learning_rate=np.asarray([0.01, 0.005]),
+        test_loss=1.7,
+    )
+    surprisal = SurprisalData(2, np.asarray([8.0, 9.0]), np.asarray([2.0, 2.2]))
+    coverage = CoverageData(10, np.asarray([10, 20]), np.asarray([0.1, 0.2]))
+    colors = {"GRU": "#000000"}
+
+    training_spec = plot_training_history({"GRU": history}, colors).to_dict()
+    histogram_spec = plot_surprisal_histogram({"GRU": surprisal}, colors).to_dict()
+    coverage_spec = plot_coverage({"GRU": coverage}, colors).to_dict()
+    efficiency_spec = plot_coverage(
+        {"GRU": coverage}, colors, efficiency=True
+    ).to_dict()
+
+    assert training_spec["encoding"]["x"]["scale"]["domainMin"] == 0
+    assert training_spec["encoding"]["y"]["scale"] == {"zero": False}
+    for spec in (histogram_spec, coverage_spec, efficiency_spec):
+        assert spec["encoding"]["x"]["scale"]["domainMin"] == 0
+        assert spec["encoding"]["y"]["scale"]["domainMin"] == 0
+    for spec in (training_spec, histogram_spec, coverage_spec, efficiency_spec):
+        assert "params" not in spec
+    assert coverage_spec["encoding"]["y"]["axis"]["format"] == ".1%"
+    assert coverage_spec["encoding"]["tooltip"][2]["format"] == ".1%"
+    assert "axis" not in efficiency_spec["encoding"]["y"]
+    assert efficiency_spec["encoding"]["tooltip"][2]["format"] == ".6g"
+
+
 def test_playground_services_with_bigram_artifact():
     record = load_catalog().by_id("baseline-bigram")
     runtime = {record.id: get_runtime_model(record)}
@@ -252,6 +288,39 @@ def test_playground_services_with_bigram_artifact():
     assert len(generated[record.id]) == 3
     assert 1 <= len(completed[record.id]) <= 3
     assert all(candidate.text.startswith("pass") for candidate in completed[record.id])
+
+
+def test_character_probability_trace_uses_incremental_context():
+    tokenizer = CharTokenizer.from_text(["abc"])
+    model = AutoregressiveBigram(tokenizer, alpha=1.0)
+    a_id = tokenizer.token_to_id["a"]
+    b_id = tokenizer.token_to_id["b"]
+    c_id = tokenizer.token_to_id["c"]
+    model.count[tokenizer.bos_id, a_id] = 9
+    model.count[a_id, b_id] = 4
+    model.count[b_id, c_id] = 7
+    runtime = {"bigram": (model, tokenizer)}
+
+    short_trace = trace_character_probabilities("a", runtime, top_k=3)[0]
+    trace = trace_character_probabilities("ab", runtime, top_k=3)[0]
+
+    assert trace.characters[0].probability == pytest.approx(10 / 13)
+    assert trace.characters[1].probability == pytest.approx(5 / 8)
+    assert short_trace.characters[0] == trace.characters[0]
+    assert trace.next_tokens[0].token == "c"
+    assert trace.next_tokens[0].probability == pytest.approx(8 / 11)
+
+
+def test_probability_color_and_html_are_continuous_and_escaped():
+    assert probability_color(0.0) == "#ef4444"
+    assert probability_color(0.5) == "#f59e0b"
+    assert probability_color(1.0) == "#22c55e"
+    assert probability_color(0.25) not in {"#ef4444", "#f59e0b"}
+
+    markup = colored_password_html([("<", 0.5), (" ", 0.1)])
+    assert ">&lt;</span>" in markup
+    assert "&nbsp;" in markup
+    assert "50.00%" in markup
 
 
 @pytest.mark.parametrize("password", ["", "密码", "a" * 13])

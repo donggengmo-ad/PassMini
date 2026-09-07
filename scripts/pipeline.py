@@ -273,6 +273,25 @@ def model_summary(config: ExperimentConfig, **kwargs) -> None:
     model = build_model(config, tokenizer)
     print(torchinfo.summary(model, input_size=(1, 1), dtypes=[torch.long], depth=2, **kwargs))
 
+def load_model_tier(model_type: str,
+                    model_tier: str='low',
+                    path: str='output/model_tiers.json') -> dict:
+    """
+    加载模型等级配置。
+    :param model_type: 模型类型
+    :param model_tier: 模型等级
+    :param path: 模型等级配置文件路径
+    :return: 模型等级配置字典
+    """
+    with open(path, 'r', encoding='utf-8') as f:
+        all_tier = json.load(f)
+        if model_tier not in all_tier:
+            raise ValueError(f"模型等级 {model_tier} 不在配置中")
+        for v in all_tier.values():
+            if model_type not in v:
+                raise ValueError(f"模型类型 {model_type} 不在配置中")
+    return all_tier[model_tier][model_type]
+
 __all__ = [
     "ExperimentArtifacts",
     "seed_everything",
@@ -286,4 +305,5 @@ __all__ = [
     "get_device",
     "plot_loss",
     "model_summary",
+    "load_model_tier",
 ]

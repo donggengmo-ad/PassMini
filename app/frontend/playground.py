@@ -31,6 +31,32 @@ class ScoreAggregate:
     standard_deviation: float
 
 
+@dataclass(frozen=True)
+class CharacterProbability:
+    """记录字符在其历史前缀之后出现的条件概率。"""
+
+    character: str
+    probability: float
+
+
+@dataclass(frozen=True)
+class NextTokenPrediction:
+    """记录当前前缀之后的一个候选 token。"""
+
+    token: str
+    probability: float
+    is_eos: bool
+
+
+@dataclass(frozen=True)
+class ModelProbabilityTrace:
+    """保存一个模型对完整输入历史和下一 token 的分析。"""
+
+    model_id: str
+    characters: tuple[CharacterProbability, ...]
+    next_tokens: tuple[NextTokenPrediction, ...]
+
+
 def validate_password_input(password: str, max_length: int = 12) -> None:
     """沿用数据集可打印 ASCII 和长度边界校验演示输入。"""
 
@@ -67,6 +93,91 @@ def aggregate_scores(scores: list[PasswordScore]) -> ScoreAggregate:
         mean_bits_per_token=float(per_token.mean()),
         standard_deviation=float(surprisals.std()),
     )
+
+
+def _generation_probabilities(
+    model: AutoregressivePasswordModel,
+    logits: torch.Tensor,
+) -> torch.Tensor:
+    """将一步 logits 转为生成概率，并屏蔽不可生成的特殊 token。"""
+
+    if logits.shape != (1, model.vocab_size):
+        raise ValueError("next_logits 必须是 [1, vocab_size] 张量")
+    scores = logits.detach().clone()
+    invalid_ids = [model.pad_id, model.tokenizer.bos_id, model.tokenizer.unk_id]
+    scores[:, invalid_ids] = -torch.inf
+    if not torch.isfinite(scores).any():
+        raise ValueError("模型没有可展示的下一 token")
+    return torch.softmax(scores, dim=-1)
+
+
+def trace_character_probabilities(
+    text: str,
+    models: Mapping[str, RuntimeModel],
+    top_k: int = 5,
+    max_length: int = 12,
+) -> list[ModelProbabilityTrace]:
+    """逐字符计算条件概率，并给出当前前缀之后的 Top-K token。
+
+    每个模型只消费一次 BOS，随后通过统一增量状态逐字符推进。第 i 个字符
+    的概率始终来自它出现之前的前缀，所以继续追加字符不会改变已经记录的
+    颜色。PAD、BOS、UNK 不属于可生成候选；EOS 保留并显示为结束标记。
+    """
+
+    if normalize_password(text, min_length=0, max_length=max_length) != text:
+        raise ValueError(f"请输入 0–{max_length} 个可打印 ASCII 字符")
+    if not models:
+        raise ValueError("至少需要一个模型")
+    if top_k <= 0:
+        raise ValueError("top_k 必须大于 0")
+
+    traces: list[ModelProbabilityTrace] = []
+    with torch.inference_mode():
+        for model_id, (model, tokenizer) in models.items():
+            if not isinstance(model, AutoregressivePasswordModel):
+                raise TypeError(f"{model_id} 不支持自回归逐字符预测")
+            if model.tokenizer != tokenizer:
+                raise ValueError(f"{model_id} 的模型与 tokenizer 不一致")
+
+            model.eval()
+            state = model.initial_state(batch_size=1)
+            character_probabilities: list[CharacterProbability] = []
+            for character in text:
+                token_id = tokenizer.token_to_id.get(character)
+                if token_id is None or tokenizer.is_special_token(token_id):
+                    raise ValueError(f"字符 {character!r} 不在 {model_id} 的可用词表中")
+                probabilities = _generation_probabilities(model, state.next_logits)
+                character_probabilities.append(
+                    CharacterProbability(
+                        character=character,
+                        probability=float(probabilities[0, token_id].cpu()),
+                    )
+                )
+                token = torch.tensor([token_id], dtype=torch.long, device=model.device)
+                state = model.advance_state(state, token)
+
+            next_probabilities = _generation_probabilities(model, state.next_logits)[0]
+            candidate_count = min(top_k, tokenizer.vocab_size - 3)
+            values, token_ids = torch.topk(next_probabilities, k=candidate_count)
+            next_tokens = tuple(
+                NextTokenPrediction(
+                    token="[EOS]" if token_id == tokenizer.eos_id else tokenizer.id_to_token[token_id],
+                    probability=float(probability),
+                    is_eos=token_id == tokenizer.eos_id,
+                )
+                for probability, token_id in zip(
+                    values.detach().cpu().tolist(),
+                    token_ids.detach().cpu().tolist(),
+                )
+            )
+            traces.append(
+                ModelProbabilityTrace(
+                    model_id=model_id,
+                    characters=tuple(character_probabilities),
+                    next_tokens=next_tokens,
+                )
+            )
+    return traces
 
 
 def generate_with_models(

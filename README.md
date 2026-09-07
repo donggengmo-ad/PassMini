@@ -27,7 +27,7 @@ conda run --no-capture-output -n passmini python -m compileall -q app scripts te
 本地启动 Streamlit：
 
 ```bash
-conda run --no-capture-output -n passmini streamlit run app/streamlit_app.py
+conda run --no-capture-output -n passmini streamlit run app/app.py
 ```
 
 训练或评测完成后，将可部署文件同步到 `app/artifacts/`：

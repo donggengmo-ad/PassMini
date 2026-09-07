@@ -21,5 +21,12 @@
       "minimum": 1.6016299907977765,
       "maximum": 14.19704818725586
     }
+  },
+  "generation_quality": {
+    "total_samples": 100000000,
+    "legal_samples": 99999078,
+    "distinct_legal_samples": 85070278,
+    "legal_rate": 0.99999078,
+    "legal_unique_rate": 0.8507106235519492
   }
 }

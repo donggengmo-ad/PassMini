@@ -219,8 +219,16 @@ def plot_training_history(
         alt.Chart(pd.DataFrame(rows))
         .mark_line()
         .encode(
-            x=alt.X("Epoch:Q", title="Epoch"),
-            y=alt.Y("Loss:Q", title="Cross-Entropy Loss", scale=alt.Scale(zero=False)),
+            x=alt.X(
+                "Epoch:Q",
+                title="Epoch",
+                scale=alt.Scale(domainMin=0, zero=True),
+            ),
+            y=alt.Y(
+                "Loss:Q",
+                title="Cross-Entropy Loss",
+                scale=alt.Scale(zero=False),
+            ),
             color=alt.Color("Model:N", scale=_color_scale(labels, colors)),
             strokeDash=alt.StrokeDash(
                 "Split:N",
@@ -233,7 +241,6 @@ def plot_training_history(
             tooltip=["Model:N", "Split:N", "Epoch:Q", alt.Tooltip("Loss:Q", format=".4f")],
         )
         .properties(title="Training History", height=420)
-        .interactive(bind_y=False)
     )
 
 
@@ -258,8 +265,15 @@ def plot_learning_rate(
         alt.Chart(pd.DataFrame(rows))
         .mark_line(point=True)
         .encode(
-            x=alt.X("Epoch:Q", title="Epoch"),
-            y=alt.Y("Learning Rate:Q", scale=alt.Scale(zero=False)),
+            x=alt.X(
+                "Epoch:Q",
+                title="Epoch",
+                scale=alt.Scale(domainMin=0, zero=True),
+            ),
+            y=alt.Y(
+                "Learning Rate:Q",
+                scale=alt.Scale(domainMin=0, zero=True),
+            ),
             color=alt.Color("Model:N", scale=_color_scale(labels, colors)),
             tooltip=["Model:N", "Epoch:Q", alt.Tooltip("Learning Rate:Q", format=".6g")],
         )
@@ -302,8 +316,16 @@ def plot_surprisal_histogram(
         alt.Chart(pd.DataFrame(rows))
         .mark_line(interpolate="step-after")
         .encode(
-            x=alt.X("Value:Q", title=metric),
-            y=alt.Y("Density:Q", title="Density"),
+            x=alt.X(
+                "Value:Q",
+                title=metric,
+                scale=alt.Scale(domainMin=0, zero=True),
+            ),
+            y=alt.Y(
+                "Density:Q",
+                title="Density",
+                scale=alt.Scale(domainMin=0, zero=True),
+            ),
             color=alt.Color("Model:N", scale=_color_scale(labels, colors)),
             tooltip=["Model:N", alt.Tooltip("Value:Q", format=".3f"), alt.Tooltip("Density:Q", format=".4f")],
         )
@@ -311,7 +333,6 @@ def plot_surprisal_histogram(
             title="Bits per Token Distribution" if normalized else "Surprisal Distribution",
             height=420,
         )
-        .interactive(bind_y=False)
     )
 
 
@@ -342,9 +363,21 @@ def plot_surprisal_boxplot(
     frame = pd.DataFrame(rows)
     base = alt.Chart(frame).encode(x=alt.X("Model:N", sort=labels, title=None))
     color = alt.Color("Model:N", scale=_color_scale(labels, colors), legend=None)
-    whisker = base.mark_rule().encode(y="Minimum:Q", y2="Maximum:Q", color=color)
-    box = base.mark_bar(size=34).encode(y="Q1:Q", y2="Q3:Q", color=color)
-    median = base.mark_tick(color="#ffffff", size=32, thickness=2).encode(y="Median:Q")
+    positive_scale = alt.Scale(domainMin=0, zero=True)
+    metric = "Bits per Token" if normalized else "Surprisal (bits)"
+    whisker = base.mark_rule().encode(
+        y=alt.Y("Minimum:Q", title=metric, scale=positive_scale),
+        y2="Maximum:Q",
+        color=color,
+    )
+    box = base.mark_bar(size=34).encode(
+        y=alt.Y("Q1:Q", title=metric, scale=positive_scale),
+        y2="Q3:Q",
+        color=color,
+    )
+    median = base.mark_tick(color="#ffffff", size=32, thickness=2).encode(
+        y=alt.Y("Median:Q", title=metric, scale=positive_scale)
+    )
     return (
         (whisker + box + median)
         .properties(
@@ -379,17 +412,39 @@ def plot_coverage(
     labels = list(data)
     attempt_name = "Sampling Attempts" if sampling else "Search Attempts"
     metric_name = "Coverage / Attempts" if efficiency else "Coverage"
+    if efficiency:
+        value_axis = alt.Y(
+            "Value:Q",
+            title=metric_name,
+            scale=alt.Scale(domainMin=0, zero=True),
+        )
+        value_tooltip = alt.Tooltip("Value:Q", title=metric_name, format=".6g")
+    else:
+        value_axis = alt.Y(
+            "Value:Q",
+            title="Coverage (%)",
+            scale=alt.Scale(domainMin=0, zero=True),
+            axis=alt.Axis(format=".1%"),
+        )
+        value_tooltip = alt.Tooltip("Value:Q", title=metric_name, format=".1%")
     return (
         alt.Chart(pd.DataFrame(rows))
         .mark_line()
         .encode(
-            x=alt.X("Attempts:Q", title=attempt_name),
-            y=alt.Y("Value:Q", title=metric_name),
+            x=alt.X(
+                "Attempts:Q",
+                title=attempt_name,
+                scale=alt.Scale(domainMin=0, zero=True),
+            ),
+            y=value_axis,
             color=alt.Color("Model:N", scale=_color_scale(labels, colors)),
-            tooltip=["Model:N", alt.Tooltip("Attempts:Q", format=","), alt.Tooltip("Value:Q", format=".6g")],
+            tooltip=[
+                "Model:N",
+                alt.Tooltip("Attempts:Q", format=","),
+                value_tooltip,
+            ],
         )
         .properties(title=f"{metric_name} by {attempt_name}", height=420)
-        .interactive(bind_y=False)
     )
 
 
