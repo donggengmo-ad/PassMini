@@ -71,7 +71,7 @@ def read_model_metadata(record: ModelRecord) -> ModelMetadata:
     )
 
 
-@st.cache_resource(show_spinner=False, max_entries=12)
+@st.cache_resource(show_spinner=False, max_entries=16)
 def load_runtime_model(
     model_id: str,
     model_path: str,

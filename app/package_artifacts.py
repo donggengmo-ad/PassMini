@@ -143,13 +143,54 @@ def _prune_obsolete_artifacts(catalog_path: Path, catalog: ModelCatalog) -> None
 
     for metadata_file in catalog_path.parent.rglob(".DS_Store"):
         metadata_file.unlink()
-    for record in catalog.enabled_models:
+    for record in catalog.models:
         for filename in OBSOLETE_MODEL_FILENAMES:
             (record.artifact_dir / filename).unlink(missing_ok=True)
         for filename in OBSOLETE_EVALUATION_FILENAMES:
             (record.evaluation_dir / filename).unlink(missing_ok=True)
         if record.tier == "baseline":
             record.history_path.unlink(missing_ok=True)
+
+
+def _required_model_filenames(record: ModelRecord) -> tuple[str, ...]:
+    """返回一个模型进入部署目录前必须齐全的文件。"""
+
+    if record.tier == "baseline":
+        return tuple(
+            filename for filename in MODEL_FILENAMES if filename != "history.json"
+        )
+    return MODEL_FILENAMES
+
+
+def _packaging_records(
+    catalog: ModelCatalog,
+    output_root: Path,
+) -> tuple[ModelRecord, ...]:
+    """选出已有完整训练产物的模型，并校验所有已启用记录。
+
+    打包是对已存在产物的文件同步，不应由前端 `enabled` 开关决定；
+    因此即使模型尚未对前端开放，只要产物齐全也会被打包。反之，
+    已对前端启用的模型若缺少必需文件，必须在复制前明确报错。
+    """
+
+    ready: list[ModelRecord] = []
+    incomplete_enabled: list[str] = []
+    for record in catalog.models:
+        source_dir = _source_model_dir(record, output_root)
+        missing = [
+            filename
+            for filename in _required_model_filenames(record)
+            if not (source_dir / filename).is_file()
+        ]
+        if not missing:
+            ready.append(record)
+        elif record.enabled:
+            incomplete_enabled.append(f"{record.id}: {', '.join(missing)}")
+
+    if incomplete_enabled:
+        details = "; ".join(incomplete_enabled)
+        raise FileNotFoundError(f"已启用模型缺少必需 artifact: {details}")
+    return tuple(ready)
 
 
 def _evaluation_source(
@@ -168,23 +209,21 @@ def package_artifacts(
     catalog_path: str | Path = DEFAULT_CATALOG_PATH,
     include_evaluation: bool = True,
 ) -> dict[str, list[str]]:
-    """同步启用模型的最小部署文件，并返回逐模型复制清单。"""
+    """同步已完成模型的最小部署文件，并返回逐模型复制清单。"""
 
     source_root = Path(output_root)
     resolved_catalog_path = Path(catalog_path)
     catalog = load_catalog(resolved_catalog_path)
+    records = _packaging_records(catalog, source_root)
     _prune_obsolete_artifacts(resolved_catalog_path, catalog)
     report: dict[str, list[str]] = {}
-    for record in catalog.enabled_models:
+    for record in records:
         copied: list[str] = []
         model_source = _source_model_dir(record, source_root)
-        for filename in MODEL_FILENAMES:
-            if record.tier == "baseline" and filename == "history.json":
-                continue
+        for filename in _required_model_filenames(record):
             source = model_source / filename
-            if source.is_file():
-                _atomic_copy(source, record.artifact_dir / filename)
-                copied.append(filename)
+            _atomic_copy(source, record.artifact_dir / filename)
+            copied.append(filename)
 
         if include_evaluation:
             for filename in EVALUATION_FILENAMES:

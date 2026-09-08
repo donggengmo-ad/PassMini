@@ -26,9 +26,9 @@ with st.container(horizontal=True):
         border=True,
     )
     st.metric(
-        "Planned Models",
-        len(catalog.models) - len(catalog.enabled_models),
-        icon=":material/schedule:",
+        "Model Families",
+        len({record.model_type for record in catalog.enabled_models}),
+        icon=":material/schema:",
         border=True,
     )
 
@@ -36,16 +36,15 @@ st.subheader("Workspace", anchor=False)
 warehouse, library, playground = st.columns(3, border=True)
 with warehouse:
     st.subheader("Warehouse", anchor=False)
-    st.write("选择模型，检查配置、训练摘要和部署文件。")
+    st.write("查看并装备模型")
 with library:
     st.subheader("Library", anchor=False)
-    st.write("按当前模型集合比较训练历史、surprisal 和覆盖率。")
+    st.write("评估模型")
 with playground:
     st.subheader("Playground", anchor=False)
-    st.write("进行多模型密码评分、随机生成和前缀补全。")
+    st.write("模型做交互游戏")
 
 st.info(
-    "本应用展示模型分布下的相对结果，不估计真实破解时间。"
-    "请勿输入正在使用的真实密码。",
+    "不建议输入正在使用的真实密码。",
     icon=":material/security:",
 )

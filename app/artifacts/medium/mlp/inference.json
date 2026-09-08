@@ -1,0 +1,6 @@
+{
+  "model_type": "mlp",
+  "tau": 4,
+  "embedding_dim": 128,
+  "hidden_size": 256
+}

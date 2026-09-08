@@ -13,15 +13,15 @@
       "enabled": true
     },
     {
-      "id": "low-gru",
+      "id": "low-mlp",
       "tier": "low",
-      "model_type": "gru",
-      "display_name": "GRU · Low",
-      "artifact_dir": "artifacts/low/gru",
-      "parameter_count": 188160,
-      "flops": 4882553,
+      "model_type": "mlp",
+      "display_name": "MLP · Low",
+      "artifact_dir": "artifacts/low/mlp",
+      "parameter_count": 22912,
+      "flops": 591097,
       "training_sample_count": 7745971,
-      "color": "#49d3b4",
+      "color": "#ff8f70",
       "enabled": true
     },
     {
@@ -37,6 +37,18 @@
       "enabled": true
     },
     {
+      "id": "low-gru",
+      "tier": "low",
+      "model_type": "gru",
+      "display_name": "GRU · Low",
+      "artifact_dir": "artifacts/low/gru",
+      "parameter_count": 188160,
+      "flops": 4882553,
+      "training_sample_count": 7745971,
+      "color": "#49d3b4",
+      "enabled": true
+    },
+    {
       "id": "low-transformer",
       "tier": "low",
       "model_type": "transformer",
@@ -49,15 +61,15 @@
       "enabled": true
     },
     {
-      "id": "medium-gru",
+      "id": "medium-mlp",
       "tier": "medium",
-      "model_type": "gru",
-      "display_name": "GRU · Medium",
-      "artifact_dir": "artifacts/medium/gru",
-      "parameter_count": 736768,
-      "flops": 19138041,
+      "model_type": "mlp",
+      "display_name": "MLP · Medium",
+      "artifact_dir": "artifacts/medium/mlp",
+      "parameter_count": 176896,
+      "flops": 4591353,
       "training_sample_count": 7745971,
-      "color": "#2ca88f",
+      "color": "#d9684a",
       "enabled": true
     },
     {
@@ -73,6 +85,18 @@
       "enabled": true
     },
     {
+      "id": "medium-gru",
+      "tier": "medium",
+      "model_type": "gru",
+      "display_name": "GRU · Medium",
+      "artifact_dir": "artifacts/medium/gru",
+      "parameter_count": 736768,
+      "flops": 19138041,
+      "training_sample_count": 7745971,
+      "color": "#2ca88f",
+      "enabled": true
+    },
+    {
       "id": "medium-transformer",
       "tier": "medium",
       "model_type": "transformer",
@@ -85,15 +109,15 @@
       "enabled": true
     },
     {
-      "id": "high-gru",
+      "id": "high-mlp",
       "tier": "high",
-      "model_type": "gru",
-      "display_name": "GRU · High",
-      "artifact_dir": "artifacts/high/gru",
-      "parameter_count": 2915328,
-      "flops": 75763961,
+      "model_type": "mlp",
+      "display_name": "MLP · High",
+      "artifact_dir": "artifacts/high/mlp",
+      "parameter_count": 1205760,
+      "flops": 31335161,
       "training_sample_count": 7745971,
-      "color": "#18715f",
+      "color": "#a8442f",
       "enabled": true
     },
     {
@@ -109,6 +133,18 @@
       "enabled": true
     },
     {
+      "id": "high-gru",
+      "tier": "high",
+      "model_type": "gru",
+      "display_name": "GRU · High",
+      "artifact_dir": "artifacts/high/gru",
+      "parameter_count": 2915328,
+      "flops": 75763961,
+      "training_sample_count": 7745971,
+      "color": "#18715f",
+      "enabled": true
+    },
+    {
       "id": "high-transformer",
       "tier": "high",
       "model_type": "transformer",
@@ -119,42 +155,6 @@
       "training_sample_count": 7745971,
       "color": "#5f489e",
       "enabled": true
-    },
-    {
-      "id": "low-mlp",
-      "tier": "low",
-      "model_type": "mlp",
-      "display_name": "MLP · Low",
-      "artifact_dir": "artifacts/low/mlp",
-      "parameter_count": 22912,
-      "flops": 591097,
-      "training_sample_count": 7745971,
-      "color": "#ff8f70",
-      "enabled": false
-    },
-    {
-      "id": "medium-mlp",
-      "tier": "medium",
-      "model_type": "mlp",
-      "display_name": "MLP · Medium",
-      "artifact_dir": "artifacts/medium/mlp",
-      "parameter_count": 176896,
-      "flops": 4591353,
-      "training_sample_count": 7745971,
-      "color": "#d9684a",
-      "enabled": false
-    },
-    {
-      "id": "high-mlp",
-      "tier": "high",
-      "model_type": "mlp",
-      "display_name": "MLP · High",
-      "artifact_dir": "artifacts/high/mlp",
-      "parameter_count": 1205760,
-      "flops": 31335161,
-      "training_sample_count": 7745971,
-      "color": "#a8442f",
-      "enabled": false
     }
   ]
 }

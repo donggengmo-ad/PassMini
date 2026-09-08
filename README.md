@@ -1,62 +1,124 @@
-# PassMini 密码生成与评估器
+# PassMini
 
-PassMini 是一个面向 PyTorch、机器学习和深度学习学习的字符级密码语言模型项目。
-项目在离线环境中使用公开数据完成数据处理、Bigram 基线、自回归神经模型训练、生成和评测。
+> 基于 PyTorch 的轻量字符级密码建模实验
 
-## 当前结构
+PassMini 将密码视为字符序列，用自回归模型预测下一个字符来学习密码分布。从 Bigram 出发，扩展到固定上下文 MLP、GRU、TCN 和 Transformer，并搭建用于模型评估和交互的 Streamlit 应用。
 
-- `scripts/tokenizer.py`、`scripts/data.py`：字符词表、Dataset 和动态 padding。
-- `scripts/models.py`：`PasswordModel`、`AutoregressivePasswordModel` 以及 Bigram、MLP、GRU、TCN、Transformer。
-- `scripts/training.py`：训练、验证、梯度裁剪、scheduler 和 checkpoint。
-- `scripts/pipeline.py`：notebook 和脚本共用的配置、数据、模型与 artifact 流水线。
-- `scripts/inference.py`、`scripts/evaluation.py`：独立加载、生成、评分、搜索、覆盖率和可视化。
-- `scripts/evaluation.py` 可将完整评分等距限点导出为 surprisal NPZ，并以最小字段导出覆盖率 NPZ，
-  供后续动态图表读取。
-- 评测工作区按 `output/evaluation/<tier>/<model>/` 保存单模型 NPZ、搜索候选和摘要；
-  同档位的跨模型图片放在 `output/evaluation/<tier>/comparison/`。
-- `autorg_*.ipynb`：canonical 训练和评测入口；notebook 只表达配置、调用和结果展示。
-- `app/app.py`、`app/app_pages/`：使用 `st.navigation` 组织的 Streamlit 三层应用入口与页面。
-- `app/frontend/`、`app/artifacts/`：共享展示逻辑、交互式 Altair 图表和精选部署 artifact。
-- `.streamlit/config.toml`：应用主题；不在页面代码中注入 CSS。
+## Streamlit 应用
+[点击此处访问](https://passmini.streamlit.app)
 
-## 运行验证
+- **Warehouse**：存储所有模型及参数量等信息，可从中选择模型使用。
+- **Library**：展示训练曲线、分布直方图等，可以评估模型能力。
+- **Playground**：用模型玩交互式小游戏。
 
-```bash
-conda run --no-capture-output -n passmini python -m pytest -q
-conda run --no-capture-output -n passmini python -m compileall -q app scripts tests
+## 模型
+
+| 架构        | 建模机制           | 角色             |
+|-------------|--------------------|------------------|
+| Bigram      | 前一字符的转移计数 | 统计模型基线     |
+| MLP         | 马尔科夫假设       | 有限阶 Markov 神经基线 |
+| GRU         | 隐藏状态           | 轻量序列模型     |
+| TCN         | 扩张因果卷积       | 有限感受野模型   |
+| Transformer | 自注意力           | 全前缀序列模型   |
+
+- 所有模型使用同一字符级 tokenizer 和数据集。
+- 所有模型共享生成、评分、搜索等接口。
+- 神经网络模型都执行字符 Embedding，并使用权重绑定。
+- MLP、GRU、TCN 和 Transformer 均提供 Low、Medium 和 High 三个已训练档位。
+
+## 建模流程
+
+```text
+密码序列
+   | tokenizer
+   ↓
+[BOS] + tokens
+   | 自回归模型
+   ↓
+概率分布
+   ├── 交叉熵损失
+   ├── 概率与 Surprisal
+   ├── 随机采样生成
+   └── 束搜索与堆搜索
 ```
 
-本地启动 Streamlit：
+其中
+$$
+Surprisal(x) = -log_2 P(x)
+$$
+
+表示密码在模型建模下的意外程度，或理解为估计猜对需要的猜测次数，可以大致体现：
+- 某个模型对密码分布的拟合度
+- 某条密码的安全性（不常见性）
+
+## 指标
+
+PassMini 提供以下可视化和比较指标
+
+- 训练、验证损失和二者差值
+- 总 Surprisal 与 token 平均 Surprisal 分布
+- 生成合法率、唯一率
+- 随机采样和搜索在测试集上的覆盖率
+- Pairwise 获胜率对比（比谁 Surprisal 低）
+- 结合参数量、FLOPs 和质量指标的 Model Zoo。
+
+## 本地运行
+
+推荐用 Python 3.12
 
 ```bash
-conda run --no-capture-output -n passmini streamlit run app/app.py
+git clone https://github.com/donggengmo-ad/PassMini.git
+cd PassMini
+
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r app/requirements.txt
+
+streamlit run app/app.py
 ```
 
-训练或评测完成后，将可部署文件同步到 `app/artifacts/`：
+仓库已包含前端展示需要的模型和必要数据。
 
-```bash
-conda run --no-capture-output -n passmini python -m app.package_artifacts
+## 项目结构
+主要文件结构如下。
+```text
+PassMini/
+├── app/
+│   ├── app.py                 # Streamlit 入口
+│   ├── requirements.txt       # Community Cloud 运行依赖
+│   ├── app_pages/             # Warehouse / Library / Playground 页面
+│   ├── frontend/              # 数据加载、交互逻辑和可视化
+│   └── artifacts/             # 模型与评测产物
+├── .streamlit/config.toml     # 应用主题配置
+├── scripts/
+|   ├── tokenizer.py           # 字符级 tokenizer
+|   ├── data.py                # 密码数据处理
+│   ├── models.py              # 各种自回归模型
+│   ├── training.py            # 训练工具
+│   ├── inference.py           # 加载模型、评分、批量生成与搜索接口
+│   └── evaluation.py          # 覆盖率、统计摘要与 NPZ 导出
+├── autorg_*.ipynb             # 训练与评测用的 notebook
+└── 开发日记.md                # 开发时遇到的一些问题和解决记录
 ```
 
-## AutoDL TensorBoard 实时监控
+## 训练与复现
+项目根目录下各个 `.ipynb` 格式 notebook 文件复用一套流水线，对各个模型分别训练、统一评估。
 
-AutoDL 内置 TensorBoard 默认读取 `/root/tf-logs/`。各神经模型训练 notebook 会把每次运行写入
-`/root/tf-logs/passmini/training/<tier>/<model>/<timestamp>/`，评测 notebook 写入
-`/root/tf-logs/passmini/evaluation/<tier>/<timestamp>/`；运行单元格后，在 AutoPanel 的 TensorBoard 入口即可查看。
-
-PyTorch 写入端依赖 `tensorboard` 包。同步环境依赖后无需在 notebook 中手动启动服务：
+开发验证命令：
 
 ```bash
 python -m pip install -r requirements.in
+python -m pytest -q
+python -m compileall -q app scripts tests utils
 ```
 
-训练面板实时记录 batch 运行损失/进度，以及逐 epoch 的训练损失、验证损失、泛化差距、学习率、耗时和
-最终测试损失。评测面板记录 surprisal 评分、随机生成、Best-first 搜索的进度、吞吐量和最终指标。
-`SummaryWriter` 最多每 10 秒自动刷新；各阶段结束时还会主动 flush。
+## 数据与安全
+本项目仅用于学习、研究或安全防护目的，请勿用于密码攻击等违法用途。
+- 仓库没有上传原始密码数据集。
+- 您在 Playground 中的任何输入不会被记录。
+- 项目仅支持离线生成评分或交互游戏，不支持在线登录或密码爆破。
+- Surprisal 分数只能提供安全性估计，不具备现实安全保证。
 
-模型配置只接受 `bigram`、`mlp`、`gru`、`tcn`、`transformer`，推理配置统一保存为
-`inference.json`。`autorg_mlp.ipynb` 提供固定上下文 MLP 的正式训练入口；单元测试和冒烟实验
-使用 CPU，神经模型正式训练使用 CUDA，Bigram 保持 CPU。
-
-原始数据、处理数据、训练 checkpoint 和 `output/` 工作区不提交 Git。`app/artifacts/` 只保留
-前端运行所需的精选模型权重、tokenizer、配置、训练历史和评测数组，可以随应用部署。
+## 致谢
+- PassMini 的问题设定受到 [PassGPT](https://arxiv.org/abs/2306.01545) 启发。
+- 使用了 GPT-5.6 Sol 辅助开发和调试

@@ -14,10 +14,10 @@ from app.frontend.warehouse import read_model_metadata
 
 catalog = load_catalog()
 st.title("Warehouse", anchor=False)
-st.write("选择任意多个已完成模型。这个选择会直接传递给 Library 和 Playground。")
+st.write("选择任意多个已完成模型，这个选择会直接传递给 Library 和 Playground。")
 
 with st.expander("Selection presets"):
-    st.caption("可按同一档位或同一模型架构快速选择；应用后仍可在 Models 中手动微调。")
+    st.caption("可按同一档位或同一模型架构快速选择；应用后仍可在 Models 中手动调。")
     with st.form("warehouse-selection-preset"):
         preset_column, baseline_column = st.columns([2, 1])
         preset = preset_column.selectbox(
@@ -101,7 +101,7 @@ for record in catalog.enabled_models:
 planned = [record for record in catalog.models if not record.enabled]
 if planned:
     st.subheader("Planned models", anchor=False)
-    st.caption("这些档位已规划参数，但尚未登记为可推理 artifact。")
+    st.caption("这些档位已规划参数，但尚未登记为可推理模型。")
     st.dataframe(
         [
             {

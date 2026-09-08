@@ -206,3 +206,87 @@ def test_package_artifacts_packages_high_model_without_evaluation(tmp_path):
     assert sorted(path.name for path in destination.iterdir()) == sorted(
         model_filenames
     )
+
+
+def test_package_artifacts_packages_complete_model_even_when_frontend_disabled(
+    tmp_path,
+):
+    output_root = tmp_path / "output"
+    model_source = output_root / "low" / "mlp"
+    model_source.mkdir(parents=True)
+    model_filenames = (
+        "model.pt",
+        "tokenizer.json",
+        "inference.json",
+        "history.json",
+    )
+    for filename in model_filenames:
+        (model_source / filename).write_text(filename, encoding="utf-8")
+
+    catalog_path = tmp_path / "app" / "artifacts" / "catalog.json"
+    catalog_path.parent.mkdir(parents=True)
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "id": "low-mlp",
+                        "tier": "low",
+                        "model_type": "mlp",
+                        "display_name": "MLP · Low",
+                        "artifact_dir": "artifacts/low/mlp",
+                        "parameter_count": 10,
+                        "flops": 20,
+                        "training_sample_count": 30,
+                        "color": "#000000",
+                        "enabled": False,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = package_artifacts(output_root, catalog_path, include_evaluation=False)
+
+    assert report["low-mlp"] == list(model_filenames)
+    destination = tmp_path / "app" / "artifacts" / "low" / "mlp"
+    assert sorted(path.name for path in destination.iterdir()) == sorted(
+        model_filenames
+    )
+
+
+def test_package_artifacts_rejects_incomplete_enabled_model_before_copy(tmp_path):
+    output_root = tmp_path / "output"
+    model_source = output_root / "low" / "mlp"
+    model_source.mkdir(parents=True)
+    (model_source / "model.pt").write_text("model", encoding="utf-8")
+
+    catalog_path = tmp_path / "app" / "artifacts" / "catalog.json"
+    catalog_path.parent.mkdir(parents=True)
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "id": "low-mlp",
+                        "tier": "low",
+                        "model_type": "mlp",
+                        "display_name": "MLP · Low",
+                        "artifact_dir": "artifacts/low/mlp",
+                        "parameter_count": 10,
+                        "flops": 20,
+                        "training_sample_count": 30,
+                        "color": "#000000",
+                        "enabled": True,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FileNotFoundError, match="tokenizer.json.*inference.json.*history.json"):
+        package_artifacts(output_root, catalog_path, include_evaluation=False)
+
+    assert not (tmp_path / "app" / "artifacts" / "low" / "mlp").exists()

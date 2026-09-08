@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from app.frontend.catalog import load_catalog
@@ -66,14 +67,17 @@ def test_default_catalog_and_artifacts_are_consistent():
 
     assert [record.id for record in catalog.enabled_models] == [
         "baseline-bigram",
-        "low-gru",
+        "low-mlp",
         "low-tcn",
+        "low-gru",
         "low-transformer",
-        "medium-gru",
+        "medium-mlp",
         "medium-tcn",
+        "medium-gru",
         "medium-transformer",
-        "high-gru",
+        "high-mlp",
         "high-tcn",
+        "high-gru",
         "high-transformer",
     ]
     assert len({record.id for record in catalog.models}) == len(catalog.models)
@@ -88,17 +92,16 @@ def test_default_catalog_and_artifacts_are_consistent():
         "medium-mlp",
         "high-mlp",
     ]
-    assert all(
-        not record.enabled for record in catalog.models if record.model_type == "mlp"
-    )
+    assert all(record.enabled for record in catalog.models if record.model_type == "mlp")
 
 
 def test_model_selection_presets_cover_tiers_families_and_optional_baseline():
     catalog = load_catalog()
 
     assert preset_model_ids(catalog, "Low tier") == [
-        "low-gru",
+        "low-mlp",
         "low-tcn",
+        "low-gru",
         "low-transformer",
     ]
     assert preset_model_ids(catalog, "TCN family") == [
@@ -106,14 +109,18 @@ def test_model_selection_presets_cover_tiers_families_and_optional_baseline():
         "medium-tcn",
         "high-tcn",
     ]
-    assert preset_model_ids(catalog, "MLP family") == []
+    assert preset_model_ids(catalog, "MLP family") == [
+        "low-mlp",
+        "medium-mlp",
+        "high-mlp",
+    ]
     assert preset_model_ids(catalog, "GRU family", include_baseline=True) == [
         "baseline-bigram",
         "low-gru",
         "medium-gru",
         "high-gru",
     ]
-    assert len(preset_model_ids(catalog, "All neural models")) == 9
+    assert len(preset_model_ids(catalog, "All neural models")) == 12
     with pytest.raises(ValueError, match="未知模型预设"):
         preset_model_ids(catalog, "Unknown")
 
@@ -482,6 +489,8 @@ def test_new_library_comparison_charts_have_expected_semantics():
     assert zoo_spec["layer"][0]["encoding"]["size"]["scale"]["range"] == [120, 3200]
     assert zoo_spec["layer"][0]["encoding"]["size"]["legend"] is None
     assert zoo_spec["layer"][0]["mark"]["opacity"] == 1.0
+    assert "stroke" not in zoo_spec["layer"][0]["mark"]
+    assert "strokeWidth" not in zoo_spec["layer"][0]["mark"]
     assert zoo_spec["layer"][1]["mark"]["dy"] == {
         "expr": "-datum['Label Offset']"
     }
@@ -489,7 +498,26 @@ def test_new_library_comparison_charts_have_expected_semantics():
     offsets = {row["Model"]: row["Label Offset"] for row in zoo_rows}
     assert offsets["Bigram"] < offsets["GRU"]
     assert win_spec["title"] == "Pairwise Lower-Surprisal Win Rate"
+    assert win_spec["layer"][0]["encoding"]["x"]["title"] == "Opponent Model"
+    assert win_spec["layer"][0]["encoding"]["y"]["title"] == "Focal Model"
+    assert win_spec["layer"][0]["encoding"]["y"]["axis"]["labelOverlap"] is False
     assert difference_spec["title"] == "Paired Surprisal Difference"
+
+
+def test_pairwise_chart_keeps_every_model_label_visible():
+    labels = [f"Model {index}" for index in range(13)]
+    matrix = np.full((13, 13), 0.5)
+    chart = plot_pairwise_win_rates(
+        pd.DataFrame(matrix, index=labels, columns=labels)
+    ).to_dict()
+
+    x_encoding = chart["layer"][0]["encoding"]["x"]
+    y_encoding = chart["layer"][0]["encoding"]["y"]
+    assert x_encoding["sort"] == labels
+    assert y_encoding["sort"] == labels
+    assert x_encoding["axis"]["labelOverlap"] is False
+    assert y_encoding["axis"]["labelOverlap"] is False
+    assert chart["height"] == 38 * len(labels)
 
 
 def test_chart_positive_axes_start_at_zero_and_coverage_uses_percentages():

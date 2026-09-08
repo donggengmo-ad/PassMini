@@ -151,19 +151,18 @@ if view == "Research Overview":
                 ),
                 "Parameters": st.column_config.NumberColumn(
                     format="localized",
-                    help="模型的可训练参数量；Bigram 是计数基线，因此记为 0。",
+                    help="模型的可训练参数量。",
                 ),
                 "Estimated FLOPs": st.column_config.NumberColumn(
                     format="localized",
                     help=(
                         "输入 [1, 13] 时生成完整 logits 的解析式 FLOPs 估计。\n\n"
-                        "覆盖矩阵乘法、卷积、门控、因果注意力、归一化和主要逐元素运算；"
-                        "不代表特定硬件的实际指令数。"
+                        "覆盖矩阵乘法、卷积、门控、因果注意力、归一化和主要逐元素运算。"
                     ),
                 ),
                 "Training Samples": st.column_config.NumberColumn(
                     format="localized",
-                    help="该 artifact 实际训练时使用的去重训练密码数量。",
+                    help="该模型实际训练时使用的去重训练密码数量。",
                 ),
                 "Evaluation Size": st.column_config.NumberColumn(
                     format="localized",
@@ -187,7 +186,7 @@ if view == "Research Overview":
                 ),
                 "Perplexity": st.column_config.NumberColumn(
                     format="%.3f",
-                    help="由 2^(Mean Bits/Token) 得到的平均分支复杂度；越低表示拟合越集中。",
+                    help="由 $2^{\\frac{Mean Bits}{Token}}$ 得到的平均分支复杂度；越低表示拟合越集中。",
                 ),
                 "Best Validation Loss": st.column_config.NumberColumn(
                     format="%.4f",
@@ -230,8 +229,8 @@ if view == "Research Overview":
         st.caption(
             "Model Zoo 横轴使用 batch size 为 1、sequence length 为 13 时的 "
             "Estimated FLOPs；圆点面积通过扩展后的 symlog 尺度编码 Parameters。"
-            "架构由色相区分，同架构的 tier 由同色系的明度与饱和度区分，圆点均为不透明。"
-            "Coverage 取自实际检查点，不进行插值。"
+            "架构由色相区分，同架构的 tier 由同色系的明度与饱和度区分"
+            "Coverage 为实际检查点的取样。"
         )
     else:
         st.info("所选模型暂时没有完整评测摘要。")
@@ -399,7 +398,7 @@ elif view == "Pairwise Comparison":
             st.caption(
                 "Row model Win Rate 表示该模型在对齐导出密码上取得更低 Surprisal 的"
                 "比例，相同分数按 0.5 次胜利计算。Pairwise Difference 为负时更支持"
-                "左侧模型。本结果是确定性的配对比较，并非多随机种子显著性检验。"
+                "左侧模型。"
             )
         except ValueError as error:
             st.warning(str(error))
@@ -478,5 +477,5 @@ elif view == "Generation Quality":
     report_unavailable(missing)
 
 st.caption(
-    "Surprisal 与 Coverage 均相对于已记录的模型、测试集和预算，不能视为真实破解时间的估计。"
+    "Surprisal 与 Coverage 受限于测试集和预算，不一定直接反映真实破解时间。"
 )

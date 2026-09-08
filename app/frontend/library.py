@@ -647,9 +647,7 @@ def plot_model_zoo(
         ),
         y=y_axis,
     )
-    points = base.mark_circle(
-        opacity=1.0, stroke="#f2f5f8", strokeWidth=0.8
-    ).encode(
+    points = base.mark_circle(opacity=1.0).encode(
         color=alt.Color("Model:N", scale=_color_scale(labels, colors)),
         size=alt.Size(
             "Parameter Count:Q",
@@ -732,7 +730,12 @@ def pairwise_difference(
 
 
 def plot_pairwise_win_rates(matrix: pd.DataFrame) -> alt.LayerChart:
-    """将成对低惊讶度胜率绘制为以 50% 为中点的热力图。"""
+    """将成对低惊讶度胜率绘制为以 50% 为中点的热力图。
+
+    行中的 Focal Model 是胜率的主体，列中的 Opponent Model 是对手。
+    高度随模型数增长，并关闭轴标签的自动避让，避免多模型时 Altair
+    省略已选模型的名称。
+    """
 
     labels = list(matrix.index)
     rows = [
@@ -741,9 +744,20 @@ def plot_pairwise_win_rates(matrix: pd.DataFrame) -> alt.LayerChart:
         for column in labels
     ]
     frame = pd.DataFrame(rows)
+    chart_height = max(420, 38 * len(labels))
     base = alt.Chart(frame).encode(
-        x=alt.X("Column Model:N", sort=labels, title="Compared Model"),
-        y=alt.Y("Row Model:N", sort=labels, title="Candidate Model"),
+        x=alt.X(
+            "Column Model:N",
+            sort=labels,
+            title="Opponent Model",
+            axis=alt.Axis(labelAngle=-45, labelLimit=180, labelOverlap=False),
+        ),
+        y=alt.Y(
+            "Row Model:N",
+            sort=labels,
+            title="Focal Model",
+            axis=alt.Axis(labelLimit=220, labelOverlap=False),
+        ),
     )
     heatmap = base.mark_rect().encode(
         color=alt.Color(
@@ -759,7 +773,7 @@ def plot_pairwise_win_rates(matrix: pd.DataFrame) -> alt.LayerChart:
     )
     labels_layer = base.mark_text().encode(text=alt.Text("Win Rate:Q", format=".0%"))
     return (heatmap + labels_layer).properties(
-        title="Pairwise Lower-Surprisal Win Rate", height=420
+        title="Pairwise Lower-Surprisal Win Rate", height=chart_height
     )
 
 

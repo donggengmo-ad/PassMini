@@ -307,7 +307,7 @@ elif area == "Character Lab":
                     f"{float(np.ptp(entropies)):.4f} bits",
                     help=(
                         "所选模型下一 token Shannon entropy 的最大值减最小值。\n\n"
-                        "它反映模型对下一步预测不确定程度的跨度，不表示哪一个模型更准确。"
+                        "反映模型对下一步预测不确定程度的跨度。"
                     ),
                     border=True,
                 )
