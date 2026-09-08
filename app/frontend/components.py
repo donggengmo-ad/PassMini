@@ -8,6 +8,48 @@ from .catalog import ModelCatalog, ModelRecord
 
 
 SELECTION_KEY = "selected_model_ids"
+MODEL_SELECTION_PRESETS = (
+    "All neural models",
+    "Low tier",
+    "Medium tier",
+    "High tier",
+    "GRU family",
+    "MLP family",
+    "TCN family",
+    "Transformer family",
+)
+
+_PRESET_RULES: dict[str, tuple[str, str] | None] = {
+    "All neural models": None,
+    "Low tier": ("tier", "low"),
+    "Medium tier": ("tier", "medium"),
+    "High tier": ("tier", "high"),
+    "GRU family": ("model_type", "gru"),
+    "MLP family": ("model_type", "mlp"),
+    "TCN family": ("model_type", "tcn"),
+    "Transformer family": ("model_type", "transformer"),
+}
+
+
+def preset_model_ids(
+    catalog: ModelCatalog,
+    preset: str,
+    include_baseline: bool = False,
+) -> list[str]:
+    """按档位或架构生成预设选择，并可在结果中附加 baseline。"""
+
+    if preset not in _PRESET_RULES:
+        raise ValueError(f"未知模型预设: {preset}")
+    rule = _PRESET_RULES[preset]
+    selected = []
+    for model in catalog.enabled_models:
+        if model.tier == "baseline":
+            if include_baseline:
+                selected.append(model.id)
+            continue
+        if rule is None or getattr(model, rule[0]) == rule[1]:
+            selected.append(model.id)
+    return selected
 
 
 def initialize_selection(catalog: ModelCatalog) -> None:
@@ -58,7 +100,7 @@ def render_current_selection(records: list[ModelRecord]) -> None:
         st.warning("尚未选择模型。请先在 Warehouse 中选择至少一个可用模型。")
         return
     labels = " · ".join(record.display_name for record in records)
-    st.caption(f"Current models: {labels}")
+    st.caption(f"当前模型：{labels}")
 
 
 def model_color_map(records: list[ModelRecord]) -> dict[str, str]:

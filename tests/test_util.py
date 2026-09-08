@@ -3,7 +3,7 @@ import pytest
 
 matplotlib.use("Agg")
 
-from scripts.util import plot_loss
+from scripts.pipeline import plot_loss
 
 
 def test_plot_loss_marks_test_loss_with_horizontal_dashed_line():

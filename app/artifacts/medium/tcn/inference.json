@@ -1,0 +1,12 @@
+{
+  "model_type": "tcn",
+  "embedding_dim": 128,
+  "channels": 256,
+  "kernel_size": 3,
+  "dilations": [
+    1,
+    2,
+    4,
+    8
+  ]
+}

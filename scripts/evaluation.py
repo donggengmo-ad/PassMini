@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import math
 import random
+import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Mapping
 
@@ -14,6 +16,7 @@ import numpy as np
 
 from .inference import GenerationCandidate
 from .data import normalize_password
+from .monitoring import ProgressCallback
 
 
 @dataclass(frozen=True)
@@ -74,6 +77,77 @@ class RandomGenerationEvaluation:
 
     quality: GenerationQualitySummary
     coverage: list[CoveragePoint]
+
+
+@dataclass(frozen=True)
+class EvaluationArtifactPaths:
+    """集中描述一个模型的全部评测产物路径。"""
+
+    directory: Path
+    surprisal: Path
+    random_coverage: Path
+    best_first_candidates: Path
+    best_first_coverage: Path
+    summary: Path
+
+
+def evaluation_artifact_paths(
+    output_root: str | Path,
+    tier: str,
+    model_type: str,
+) -> EvaluationArtifactPaths:
+    r"""按照 `<output_root>/<tier>/<model_type>` 构造标准评测路径。
+    :param output_root: 评测结果根目录，通常为 `output/evaluation`
+    :param tier: 模型档位，例如 `baseline`、`low`、`medium` 或 `high`
+    :param model_type: 模型架构标签，例如 `bigram`、`mlp`、`gru`、`tcn` 或 `transformer`
+    :return: 该模型全部标准评测文件的路径集合
+    """
+
+    if not tier or not model_type:
+        raise ValueError("tier 和 model_type 不能为空")
+    directory = Path(output_root) / tier / model_type
+    return EvaluationArtifactPaths(
+        directory=directory,
+        surprisal=directory / "surprisal.npz",
+        random_coverage=directory / "random_coverage.npz",
+        best_first_candidates=directory / "best_first.json",
+        best_first_coverage=directory / "best_first_coverage.npz",
+        summary=directory / "summary.json",
+    )
+
+
+def save_evaluation_summary(
+    path: str | Path,
+    *,
+    surprisal: SurprisalSummary | None = None,
+    generation_quality: GenerationQualitySummary | None = None,
+) -> Path:
+    r"""增量保存单模型评测摘要，不覆盖同文件中的另一类已完成评测。
+    :param path: 单模型 `summary.json` 路径
+    :param surprisal: 可选的完整测试集惊讶度摘要
+    :param generation_quality: 可选的随机生成质量摘要
+    :return: 实际写入路径
+    """
+
+    if surprisal is None and generation_quality is None:
+        raise ValueError("至少需要提供一种评测摘要")
+    output_path = Path(path)
+    if output_path.is_file():
+        payload = json.loads(output_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("已有 summary.json 顶层必须是对象")
+    else:
+        payload = {}
+    if surprisal is not None:
+        payload["surprisal"] = asdict(surprisal)
+    if generation_quality is not None:
+        payload["generation_quality"] = asdict(generation_quality)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return output_path
 
 
 def _uniform_sample_indices(size: int, max_points: int) -> np.ndarray:
@@ -177,6 +251,7 @@ def generate_random_passwords(
     generator=None,
     verbose: bool = False,
     progress_step: int = 1_000,
+    progress_callback: ProgressCallback | None = None,
 ) -> list[str]:
     r"""调用模型独立随机采样并返回生成文本。
     :param model: 实现 `generate()` 的密码模型
@@ -187,6 +262,7 @@ def generate_random_passwords(
     :param generator: 可选的随机数生成器
     :param verbose: 是否打印采样进度，不打印生成文本
     :param progress_step: verbose 模式下的进度输出间隔
+    :param progress_callback: 可选实时回调，接收已完成样本数和当前速度/进度
     :return: 按采样顺序排列的生成文本；允许重复
     """
 
@@ -200,27 +276,62 @@ def generate_random_passwords(
         raise ValueError("progress_step 必须大于 0")
 
     samples: list[str] = []
+    start_time = time.perf_counter()
     while len(samples) < num_samples:
         current_batch_size = min(batch_size, num_samples - len(samples))
-        generated_batch = model.generate_batch(
-            batch_size=current_batch_size,
-            max_length=max_length,
-            temperature=temperature,
-            generator=generator,
+        generated_batch = _generate_password_batch(
+            model,
+            current_batch_size,
+            max_length,
+            temperature,
+            generator,
         )
-        if not isinstance(generated_batch, list) or not all(
-            isinstance(generated, str) for generated in generated_batch
-        ):
-            raise TypeError("model.generate_batch() 必须返回字符串列表")
-        if len(generated_batch) != current_batch_size:
-            raise ValueError("model.generate_batch() 返回数量与 batch_size 不一致")
         samples.extend(generated_batch)
+        if progress_callback is not None:
+            elapsed = max(time.perf_counter() - start_time, 1e-12)
+            progress_callback(
+                len(samples),
+                {
+                    "progress": len(samples) / num_samples,
+                    "samples_per_second": len(samples) / elapsed,
+                },
+            )
         if verbose:
             completed = len(samples)
             crossed_progress_step = completed % progress_step < current_batch_size
             if crossed_progress_step or completed == num_samples:
                 print(f"Generated {completed} / {num_samples} samples")
     return samples
+
+
+def _generate_password_batch(
+    model,
+    batch_size: int,
+    max_length: int,
+    temperature: float,
+    generator,
+) -> list[str]:
+    """调用并校验一次模型批量生成，供普通生成与流式评测复用。"""
+
+    generated_batch = model.generate_batch(
+        batch_size=batch_size,
+        max_length=max_length,
+        temperature=temperature,
+        generator=generator,
+    )
+    if not isinstance(generated_batch, list) or not all(
+        isinstance(generated, str) for generated in generated_batch
+    ):
+        raise TypeError("model.generate_batch() 必须返回字符串列表")
+    if len(generated_batch) != batch_size:
+        raise ValueError("model.generate_batch() 返回数量与 batch_size 不一致")
+    return generated_batch
+
+
+def _is_legal_password(password: str, max_length: int) -> bool:
+    """判断字符串是否满足项目统一的密码规范化约束。"""
+
+    return normalize_password(password, min_length=1, max_length=max_length) == password
 
 
 def summarize_generation_quality(
@@ -244,11 +355,7 @@ def summarize_generation_quality(
     if not all(isinstance(sample, str) for sample in sample_list):
         raise TypeError("samples 中的每个元素必须是 str")
 
-    legal_samples = [
-        sample
-        for sample in sample_list
-        if normalize_password(sample, min_length=1, max_length=max_length) == sample
-    ]
+    legal_samples = [sample for sample in sample_list if _is_legal_password(sample, max_length)]
     legal_count = len(legal_samples)
     distinct_legal_count = len(set(legal_samples))
     return GenerationQualitySummary(
@@ -269,11 +376,13 @@ def evaluate_random_generation(
     generator=None,
     verbose: bool = False,
     progress_step: int = 1_000,
+    progress_callback: ProgressCallback | None = None,
 ) -> GenerationQualitySummary:
     r"""随机采样并直接返回生成质量摘要。
 
     `batch_size` 控制每次模型调用的并行样本数。需要同时绘制随机覆盖率时，应先调用 `generate_random_passwords()`，再将返回的
     样本传给 `summarize_generation_quality()` 和 `random_generation_coverage_curve()`。
+    `progress_callback` 会原样传给批量生成过程，可用于 TensorBoard 实时监控。
     """
 
     samples = generate_random_passwords(
@@ -285,6 +394,7 @@ def evaluate_random_generation(
         generator=generator,
         verbose=verbose,
         progress_step=progress_step,
+        progress_callback=progress_callback,
     )
     return summarize_generation_quality(samples, max_length=max_length)
 
@@ -300,6 +410,7 @@ def evaluate_random_generation_with_coverage(
     checkpoint_step: int = 100,
     verbose: bool = False,
     progress_step: int = 1_000,
+    progress_callback: ProgressCallback | None = None,
 ) -> RandomGenerationEvaluation:
     r"""用同一批随机样本同时计算质量和测试集覆盖率。
     :param model: 实现 `generate()` 的密码模型
@@ -312,29 +423,94 @@ def evaluate_random_generation_with_coverage(
     :param checkpoint_step: 每隔多少次采样记录一个覆盖率检查点
     :param verbose: 是否打印采样进度，不打印生成文本
     :param progress_step: verbose 模式下的进度输出间隔
+    :param progress_callback: 可选实时回调，接收已完成样本数和当前速度/进度
     :return: 同一批样本对应的质量摘要和覆盖率曲线点
 
-    函数只在内存中暂存样本：先统计合法率，再按原采样顺序统计覆盖率，避免
-    notebook 重复调用模型生成两批不同样本而造成图表无法公平比较。
+    函数逐 batch 生成并立即更新合法计数、不同合法密码集合、测试集命中集合
+    和覆盖率检查点，不保存完整样本列表。这样质量指标与覆盖率仍严格来自同一批
+    随机样本，同时把主要内存规模从 `num_samples` 降到 `batch_size`。
+
+    为精确计算合法唯一率，函数仍需保存所有不同合法密码；覆盖率曲线也会保存
+    `num_samples // checkpoint_step` 个检查点。因此极高多样性或过密检查点仍会
+    消耗 CPU 内存，但不会再保留每一次重复采样得到的字符串。
     """
 
-    samples = generate_random_passwords(
-        model,
-        num_samples=num_samples,
-        max_length=max_length,
-        temperature=temperature,
-        batch_size=batch_size,
-        generator=generator,
-        verbose=verbose,
-        progress_step=progress_step,
+    if num_samples <= 0:
+        raise ValueError("num_samples 必须大于 0")
+    if max_length <= 0:
+        raise ValueError("max_length 必须大于 0")
+    if batch_size <= 0:
+        raise ValueError("batch_size 必须大于 0")
+    if checkpoint_step <= 0:
+        raise ValueError("checkpoint_step 必须大于 0")
+    if progress_step <= 0:
+        raise ValueError("progress_step 必须大于 0")
+    test_set = set(test_passwords)
+    if not test_set:
+        raise ValueError("测试集不能为空")
+    if len(test_set) != len(test_passwords):
+        raise ValueError("测试集包含重复密码")
+
+    legal_count = 0
+    distinct_legal: set[str] = set()
+    seen_hits: set[str] = set()
+    points: list[CoveragePoint] = []
+    completed = 0
+    start_time = time.perf_counter()
+
+    while completed < num_samples:
+        current_batch_size = min(batch_size, num_samples - completed)
+        generated_batch = _generate_password_batch(
+            model,
+            current_batch_size,
+            max_length,
+            temperature,
+            generator,
+        )
+
+        # 按原采样顺序逐项更新，确保跨 batch 的检查点与完整列表算法完全一致。
+        for password in generated_batch:
+            completed += 1
+            if _is_legal_password(password, max_length):
+                legal_count += 1
+                distinct_legal.add(password)
+            if password in test_set:
+                seen_hits.add(password)
+            if completed % checkpoint_step == 0:
+                coverage = len(seen_hits) / len(test_set)
+                points.append(
+                    CoveragePoint(
+                        attempts=completed,
+                        hits=len(seen_hits),
+                        coverage=coverage,
+                        efficiency=coverage / completed,
+                    )
+                )
+
+        if progress_callback is not None:
+            elapsed = max(time.perf_counter() - start_time, 1e-12)
+            progress_callback(
+                completed,
+                {
+                    "progress": completed / num_samples,
+                    "samples_per_second": completed / elapsed,
+                },
+            )
+        if verbose:
+            crossed_progress_step = completed % progress_step < current_batch_size
+            if crossed_progress_step or completed == num_samples:
+                print(f"Generated {completed} / {num_samples} samples")
+
+    quality = GenerationQualitySummary(
+        total_samples=completed,
+        legal_samples=legal_count,
+        distinct_legal_samples=len(distinct_legal),
+        legal_rate=legal_count / completed,
+        legal_unique_rate=len(distinct_legal) / legal_count if legal_count else 0.0,
     )
     return RandomGenerationEvaluation(
-        quality=summarize_generation_quality(samples, max_length=max_length),
-        coverage=random_generation_coverage_curve(
-            samples,
-            test_passwords,
-            checkpoint_step=checkpoint_step,
-        ),
+        quality=quality,
+        coverage=points,
     )
 
 
@@ -774,6 +950,9 @@ __all__ = [
     "SurprisalSummary",
     "GenerationQualitySummary",
     "RandomGenerationEvaluation",
+    "EvaluationArtifactPaths",
+    "evaluation_artifact_paths",
+    "save_evaluation_summary",
     "save_surprisal_npz",
     "save_coverage_npz",
     "read_test_passwords",

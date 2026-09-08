@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import pytest
 
@@ -5,6 +7,7 @@ from scripts.evaluation import (
     CoveragePoint,
     GenerationQualitySummary,
     coverage_curve,
+    evaluation_artifact_paths,
     evaluate_random_generation,
     evaluate_random_generation_with_coverage,
     generate_random_passwords,
@@ -18,11 +21,37 @@ from scripts.evaluation import (
     plot_surprisal_histogram,
     read_test_passwords,
     save_coverage_npz,
+    save_evaluation_summary,
     save_surprisal_npz,
+    summarize_generation_quality,
     summarize_surprisal,
     summarize_values,
 )
 from scripts.inference import GenerationCandidate
+
+
+def test_evaluation_artifact_paths_are_tier_and_model_scoped(tmp_path):
+    paths = evaluation_artifact_paths(tmp_path, "medium", "gru")
+
+    assert paths.directory == tmp_path / "medium" / "gru"
+    assert paths.surprisal == paths.directory / "surprisal.npz"
+    assert paths.random_coverage == paths.directory / "random_coverage.npz"
+    assert paths.best_first_candidates == paths.directory / "best_first.json"
+    assert paths.best_first_coverage == paths.directory / "best_first_coverage.npz"
+    assert paths.summary == paths.directory / "summary.json"
+
+
+def test_save_evaluation_summary_merges_completed_stages(tmp_path):
+    path = tmp_path / "medium" / "gru" / "summary.json"
+    surprisal = summarize_surprisal(["a", "bc"], [2.0, 6.0])
+    quality = GenerationQualitySummary(100, 99, 80, 0.99, 80 / 99)
+
+    save_evaluation_summary(path, surprisal=surprisal)
+    save_evaluation_summary(path, generation_quality=quality)
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["surprisal"]["count"] == 2
+    assert payload["generation_quality"]["total_samples"] == 100
 
 
 def test_save_surprisal_npz_keeps_all_values_below_limit(tmp_path):
@@ -269,6 +298,22 @@ def test_generate_random_passwords_uses_batches_and_handles_tail_batch():
     assert model.batch_calls == [2, 2, 1]
 
 
+def test_generate_random_passwords_reports_batch_progress():
+    model = SequenceModel(["a", "b"])
+    updates = []
+
+    generate_random_passwords(
+        model,
+        num_samples=5,
+        batch_size=2,
+        progress_callback=lambda step, metrics: updates.append((step, dict(metrics))),
+    )
+
+    assert [step for step, _ in updates] == [2, 4, 5]
+    assert updates[-1][1]["progress"] == pytest.approx(1.0)
+    assert updates[-1][1]["samples_per_second"] > 0
+
+
 def test_generate_random_passwords_rejects_non_positive_batch_size():
     with pytest.raises(ValueError, match="batch_size"):
         generate_random_passwords(SequenceModel(["a"]), num_samples=2, batch_size=0)
@@ -310,6 +355,56 @@ def test_evaluate_random_generation_with_coverage_reuses_one_sample_batch():
     assert [point.attempts for point in result.coverage] == [2, 4]
     assert [point.hits for point in result.coverage] == [1, 2]
     assert model.calls == 4
+
+
+def test_streaming_random_evaluation_matches_materialized_statistics():
+    outputs = ["a", "a", "", "b", "x\n", "c", "b"]
+    test_passwords = ["a", "b", "z"]
+    streaming_model = SequenceModel(outputs)
+    materialized_model = SequenceModel(outputs)
+
+    actual = evaluate_random_generation_with_coverage(
+        streaming_model,
+        test_passwords,
+        num_samples=len(outputs),
+        max_length=12,
+        batch_size=3,
+        checkpoint_step=2,
+    )
+    samples = generate_random_passwords(
+        materialized_model,
+        num_samples=len(outputs),
+        max_length=12,
+        batch_size=3,
+    )
+    expected_quality = summarize_generation_quality(samples, max_length=12)
+    expected_coverage = random_generation_coverage_curve(
+        samples,
+        test_passwords,
+        checkpoint_step=2,
+    )
+
+    assert actual.quality == expected_quality
+    assert actual.coverage == expected_coverage
+    assert streaming_model.batch_calls == [3, 3, 1]
+
+
+def test_streaming_random_evaluation_reports_each_completed_batch():
+    model = SequenceModel(["a", "b"])
+    updates = []
+
+    evaluate_random_generation_with_coverage(
+        model,
+        ["a", "b"],
+        num_samples=5,
+        batch_size=2,
+        checkpoint_step=2,
+        progress_callback=lambda step, metrics: updates.append((step, dict(metrics))),
+    )
+
+    assert [step for step, _ in updates] == [2, 4, 5]
+    assert updates[-1][1]["progress"] == pytest.approx(1.0)
+    assert updates[-1][1]["samples_per_second"] > 0
 
 
 def test_plot_random_coverage_curve_labels_attempts_as_sampling():

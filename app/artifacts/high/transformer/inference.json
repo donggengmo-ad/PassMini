@@ -1,0 +1,8 @@
+{
+  "model_type": "transformer",
+  "d_model": 512,
+  "nhead": 8,
+  "num_layers": 2,
+  "dim_feedforward": 512,
+  "max_length": 16
+}

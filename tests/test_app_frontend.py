@@ -5,33 +5,59 @@ import numpy as np
 import pytest
 
 from app.frontend.catalog import load_catalog
+from app.frontend.components import preset_model_ids
 from app.frontend.probability_input import colored_password_html, probability_color
 from app.frontend.library import (
     CoverageData,
+    EvaluationSummary,
+    MetricSummary,
     SurprisalData,
     TrainingHistory,
+    build_research_overview,
+    coverage_at_budget,
     load_coverage_data,
+    load_evaluation_summary,
     load_generation_quality,
     load_surprisal_data,
     load_training_history,
     mean_coverage,
     mean_surprisal,
+    pairwise_difference,
+    pairwise_win_rates,
     plot_coverage,
     plot_generation_quality,
+    plot_generalization_gap,
     plot_learning_rate,
+    plot_pairwise_difference,
+    plot_pairwise_win_rates,
+    plot_model_zoo,
     plot_surprisal_boxplot,
     plot_surprisal_histogram,
     plot_training_history,
+    plot_validation_loss_by_time,
 )
 from app.frontend.playground import (
+    PasswordScore,
     aggregate_scores,
     complete_with_models,
+    completion_consensus_frame,
+    completion_consensus_summary,
+    distribution_entropy,
+    generate_challenge_password,
     generate_with_models,
+    model_disagreement_matrix,
+    plot_completion_consensus,
+    plot_model_disagreement,
+    plot_probability_keyboard,
+    plot_score_comparison,
+    plot_surprisal_journey,
+    plot_temperature_laboratory,
     score_models,
     trace_character_probabilities,
 )
 from app.frontend.warehouse import get_runtime_model, read_model_metadata
 from scripts.models import AutoregressiveBigram
+from scripts.inference import GenerationCandidate
 from scripts.tokenizer import CharTokenizer
 
 
@@ -43,9 +69,53 @@ def test_default_catalog_and_artifacts_are_consistent():
         "low-gru",
         "low-tcn",
         "low-transformer",
+        "medium-gru",
+        "medium-tcn",
+        "medium-transformer",
+        "high-gru",
+        "high-tcn",
+        "high-transformer",
     ]
     assert len({record.id for record in catalog.models}) == len(catalog.models)
     assert all(record.inference_ready for record in catalog.enabled_models)
+    assert catalog.by_id("low-gru").flops == 4_882_553
+    assert catalog.by_id("low-gru").training_sample_count == 7_745_971
+    assert catalog.by_id("medium-gru").training_sample_count == 7_745_971
+    assert catalog.by_id("high-gru").training_sample_count == 7_745_971
+    assert catalog.by_id("baseline-bigram").flops == 2_574
+    assert [record.id for record in catalog.models if record.model_type == "mlp"] == [
+        "low-mlp",
+        "medium-mlp",
+        "high-mlp",
+    ]
+    assert all(
+        not record.enabled for record in catalog.models if record.model_type == "mlp"
+    )
+
+
+def test_model_selection_presets_cover_tiers_families_and_optional_baseline():
+    catalog = load_catalog()
+
+    assert preset_model_ids(catalog, "Low tier") == [
+        "low-gru",
+        "low-tcn",
+        "low-transformer",
+    ]
+    assert preset_model_ids(catalog, "TCN family") == [
+        "low-tcn",
+        "medium-tcn",
+        "high-tcn",
+    ]
+    assert preset_model_ids(catalog, "MLP family") == []
+    assert preset_model_ids(catalog, "GRU family", include_baseline=True) == [
+        "baseline-bigram",
+        "low-gru",
+        "medium-gru",
+        "high-gru",
+    ]
+    assert len(preset_model_ids(catalog, "All neural models")) == 9
+    with pytest.raises(ValueError, match="未知模型预设"):
+        preset_model_ids(catalog, "Unknown")
 
 
 def test_catalog_rejects_artifact_path_outside_app(tmp_path):
@@ -64,6 +134,8 @@ def test_catalog_rejects_artifact_path_outside_app(tmp_path):
                         "display_name": "Escape",
                         "artifact_dir": "../../outside",
                         "parameter_count": 1,
+                        "flops": 1,
+                        "training_sample_count": 1,
                         "color": "#000000",
                     }
                 ]
@@ -105,6 +177,7 @@ def test_library_loaders_and_aggregates(tmp_path):
                 "train_loss": [2.0, 1.0],
                 "valid_loss": [2.2, 1.2],
                 "learning_rate": [0.1, 0.05],
+                "epoch_seconds": [60.0, 90.0],
                 "test_loss": 1.3,
             }
         ),
@@ -141,6 +214,7 @@ def test_library_loaders_and_aggregates(tmp_path):
     quality = load_generation_quality(tmp_path / "summary.json")
 
     assert history.test_loss == pytest.approx(1.3)
+    assert history.epoch_seconds.tolist() == pytest.approx([60.0, 90.0])
     assert surprisal.evaluation_size == 100
     assert coverage.efficiency.tolist() == pytest.approx([0.01, 0.01])
     assert quality.legal_unique_rate == pytest.approx(0.75)
@@ -159,6 +233,115 @@ def test_library_loaders_and_aggregates(tmp_path):
     )
     assert averaged_surprisal.surprisal_bits.tolist() == pytest.approx([9.0, 11.0])
     assert averaged_coverage.coverage.tolist() == pytest.approx([0.15, 0.3])
+
+
+@pytest.mark.parametrize("loader", [load_surprisal_data, load_coverage_data])
+def test_npz_loaders_report_corrupt_files_as_validation_errors(tmp_path, loader):
+    path = tmp_path / "corrupt.npz"
+    path.write_bytes(b"not a zip archive")
+
+    with pytest.raises(ValueError, match="尚未写完或已经损坏"):
+        loader(path)
+
+
+def test_evaluation_summary_and_research_overview_use_full_statistics(tmp_path):
+    metric = {
+        "count": 100,
+        "mean": 2.0,
+        "median": 1.8,
+        "p90": 3.0,
+        "p95": 3.5,
+        "p99": 4.0,
+        "minimum": 0.5,
+        "maximum": 6.0,
+    }
+    path = tmp_path / "summary.json"
+    path.write_text(
+        json.dumps(
+            {
+                "surprisal": {
+                    "count": 100,
+                    "raw_surprisal_bits": {**metric, "mean": 10.0},
+                    "bits_per_token": metric,
+                },
+                "generation_quality": {
+                    "total_samples": 1000,
+                    "legal_rate": 0.99,
+                    "legal_unique_rate": 0.8,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    summary = load_evaluation_summary(path)
+    history = TrainingHistory(
+        np.asarray([2.2, 1.8]),
+        np.asarray([2.3, 1.9]),
+        np.asarray([0.1, 0.05]),
+        2.0,
+        np.asarray([1800.0, 1800.0]),
+    )
+    coverage = CoverageData(100, np.asarray([100, 500]), np.asarray([0.1, 0.4]))
+    overview = build_research_overview(
+        "Model", 123, summary, history, coverage, coverage,
+        best_first_budget=400, random_budget=500,
+        flops=456, training_sample_count=789,
+    )
+
+    assert summary.bits_per_token.mean == pytest.approx(2.0)
+    assert overview.perplexity == pytest.approx(4.0)
+    assert overview.flops == 456
+    assert overview.training_sample_count == 789
+    assert overview.best_validation_loss == pytest.approx(1.9)
+    assert overview.best_epoch == 2
+    assert overview.training_hours == pytest.approx(1.0)
+    assert overview.best_first_coverage == pytest.approx(0.1)
+    assert overview.random_coverage == pytest.approx(0.4)
+    assert coverage_at_budget(coverage, 99) is None
+
+
+def test_evaluation_summary_allows_pending_generation_quality(tmp_path):
+    metric = {
+        "count": 2,
+        "mean": 2.0,
+        "median": 2.0,
+        "p90": 2.8,
+        "p95": 2.9,
+        "p99": 2.98,
+        "minimum": 1.0,
+        "maximum": 3.0,
+    }
+    path = tmp_path / "summary.json"
+    path.write_text(
+        json.dumps(
+            {
+                "surprisal": {
+                    "count": 2,
+                    "raw_surprisal_bits": metric,
+                    "bits_per_token": metric,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = load_evaluation_summary(path)
+
+    assert summary.evaluation_size == 2
+    assert summary.generation_quality is None
+
+
+def test_pairwise_surprisal_comparison_is_paired_and_counts_ties():
+    left = SurprisalData(3, np.asarray([1.0, 2.0, 3.0]), np.asarray([1.0, 2.0, 3.0]))
+    right = SurprisalData(3, np.asarray([2.0, 2.0, 4.0]), np.asarray([2.0, 2.0, 4.0]))
+
+    matrix = pairwise_win_rates({"Left": left, "Right": right})
+    differences = pairwise_difference(left, right)
+
+    assert matrix.loc["Left", "Right"] == pytest.approx(5 / 6)
+    assert matrix.loc["Right", "Left"] == pytest.approx(1 / 6)
+    assert matrix.loc["Left", "Left"] == pytest.approx(0.5)
+    assert differences.tolist() == pytest.approx([-1.0, 0.0, -1.0])
 
 
 def test_library_rejects_incompatible_aggregates():
@@ -243,6 +426,72 @@ def test_coverage_chart_uniformly_limits_points_and_keeps_endpoints():
     assert rows[-1]["Attempts"] == 10_001
 
 
+def test_new_library_comparison_charts_have_expected_semantics():
+    history = TrainingHistory(
+        np.asarray([2.0, 1.8]),
+        np.asarray([2.1, 1.9]),
+        None,
+        None,
+        np.asarray([1800.0, 3600.0]),
+    )
+    summary_metric = MetricSummary(10, 2.0, 1.9, 2.8, 3.0, 3.5, 1.0, 4.0)
+    summary = EvaluationSummary(
+        10,
+        MetricSummary(10, 10.0, 9.0, 14.0, 15.0, 18.0, 4.0, 22.0),
+        summary_metric,
+        load_generation_quality(
+            load_catalog().by_id("low-gru").evaluation_dir / "summary.json"
+        ),
+    )
+    overview = build_research_overview(
+        "GRU", 100, summary, history, flops=1_000, training_sample_count=10
+    )
+    bigram_overview = build_research_overview(
+        "Bigram", 0, summary, flops=10, training_sample_count=10
+    )
+    pairwise = pairwise_win_rates(
+        {
+            "A": SurprisalData(2, np.asarray([1.0, 2.0]), np.asarray([1.0, 2.0])),
+            "B": SurprisalData(2, np.asarray([2.0, 1.0]), np.asarray([2.0, 1.0])),
+        }
+    )
+
+    time_spec = plot_validation_loss_by_time(
+        {"GRU": history}, {"GRU": "#000000"}
+    ).to_dict()
+    gap_spec = plot_generalization_gap(
+        {"GRU": history}, {"GRU": "#000000"}
+    ).to_dict()
+    zoo_spec = plot_model_zoo(
+        [bigram_overview, overview], {"Bigram": "#ffffff", "GRU": "#000000"}
+    ).to_dict()
+    win_spec = plot_pairwise_win_rates(pairwise).to_dict()
+    difference_spec = plot_pairwise_difference(
+        "A", "B", np.asarray([-1.0, 1.0])
+    ).to_dict()
+
+    assert time_spec["title"] == "Validation Loss by Cumulative Training Time"
+    assert time_spec["encoding"]["x"]["scale"]["domainMin"] == 0
+    assert time_spec["encoding"]["y"]["scale"] == {"zero": False}
+    assert gap_spec["title"] == "Generalization Gap by Epoch"
+    assert gap_spec["layer"][0]["encoding"]["y"]["field"] == "Generalization Gap"
+    assert gap_spec["layer"][1]["mark"]["type"] == "rule"
+    assert zoo_spec["title"] == "Model Zoo"
+    assert zoo_spec["layer"][0]["encoding"]["x"]["field"] == "Estimated FLOPs"
+    assert zoo_spec["layer"][0]["encoding"]["size"]["scale"]["type"] == "symlog"
+    assert zoo_spec["layer"][0]["encoding"]["size"]["scale"]["range"] == [120, 3200]
+    assert zoo_spec["layer"][0]["encoding"]["size"]["legend"] is None
+    assert zoo_spec["layer"][0]["mark"]["opacity"] == 1.0
+    assert zoo_spec["layer"][1]["mark"]["dy"] == {
+        "expr": "-datum['Label Offset']"
+    }
+    zoo_rows = next(iter(zoo_spec["datasets"].values()))
+    offsets = {row["Model"]: row["Label Offset"] for row in zoo_rows}
+    assert offsets["Bigram"] < offsets["GRU"]
+    assert win_spec["title"] == "Pairwise Lower-Surprisal Win Rate"
+    assert difference_spec["title"] == "Paired Surprisal Difference"
+
+
 def test_chart_positive_axes_start_at_zero_and_coverage_uses_percentages():
     history = TrainingHistory(
         train_loss=np.asarray([2.0, 1.5]),
@@ -274,6 +523,52 @@ def test_chart_positive_axes_start_at_zero_and_coverage_uses_percentages():
     assert efficiency_spec["encoding"]["tooltip"][2]["format"] == ".6g"
 
 
+def test_training_history_only_lists_test_split_when_data_exists():
+    without_test = TrainingHistory(
+        train_loss=np.asarray([2.0, 1.8]),
+        valid_loss=np.asarray([2.1, 1.9]),
+        learning_rate=None,
+        test_loss=None,
+    )
+    with_test = TrainingHistory(
+        train_loss=np.asarray([2.0, 1.8]),
+        valid_loss=np.asarray([2.1, 1.9]),
+        learning_rate=None,
+        test_loss=1.85,
+    )
+    colors = {"GRU": "#000000"}
+
+    without_spec = plot_training_history({"GRU": without_test}, colors).to_dict()
+    with_spec = plot_training_history({"GRU": with_test}, colors).to_dict()
+
+    assert without_spec["encoding"]["strokeDash"]["scale"]["domain"] == [
+        "Train",
+        "Validation",
+    ]
+    assert with_spec["encoding"]["strokeDash"]["scale"]["domain"] == [
+        "Train",
+        "Validation",
+        "Test",
+    ]
+
+
+def test_surprisal_boxplot_uses_tukey_whiskers_without_scaling_to_extremes():
+    values = np.asarray([1.0, 2.0, 2.0, 3.0, 100.0])
+    chart = plot_surprisal_boxplot(
+        {"GRU": SurprisalData(5, values, values)},
+        {"GRU": "#000000"},
+    )
+
+    spec = chart.to_dict()
+    rows = next(iter(spec["datasets"].values()))
+    assert rows[0]["Lower Whisker"] == pytest.approx(1.0)
+    assert rows[0]["Upper Whisker"] == pytest.approx(3.0)
+    assert rows[0]["Maximum"] == pytest.approx(100.0)
+    assert rows[0]["Outliers"] == 1
+    assert spec["layer"][0]["encoding"]["y"]["field"] == "Lower Whisker"
+    assert spec["layer"][0]["encoding"]["y2"]["field"] == "Upper Whisker"
+
+
 def test_playground_services_with_bigram_artifact():
     record = load_catalog().by_id("baseline-bigram")
     runtime = {record.id: get_runtime_model(record)}
@@ -281,13 +576,35 @@ def test_playground_services_with_bigram_artifact():
     scores = score_models("passmini", runtime)
     aggregate = aggregate_scores(scores)
     generated = generate_with_models(runtime, 3, 8, 1.0, 2026)
+    challenge = generate_challenge_password(
+        record.id, runtime[record.id], 8, 1.0, 2026
+    )
     completed = complete_with_models(runtime, "pass", 3, 8, 1.0)
 
     assert len(scores) == 1
     assert np.isfinite(aggregate.mean_surprisal_bits)
     assert len(generated[record.id]) == 3
+    assert 1 <= len(challenge) <= 8
     assert 1 <= len(completed[record.id]) <= 3
     assert all(candidate.text.startswith("pass") for candidate in completed[record.id])
+
+
+def test_score_chart_uses_stable_hundred_bit_domain_and_expands_by_steps():
+    labels = {"a": "A", "b": "B"}
+    colors = {"a": "#000000", "b": "#ffffff"}
+    compact = plot_score_comparison(
+        [PasswordScore("a", 12.0, 6.0)],
+        labels,
+        colors,
+    ).to_dict()
+    expanded = plot_score_comparison(
+        [PasswordScore("a", 101.0, 50.5)],
+        labels,
+        colors,
+    ).to_dict()
+
+    assert compact["encoding"]["x"]["scale"]["domain"] == [0, 100.0]
+    assert expanded["encoding"]["x"]["scale"]["domain"] == [0, 125.0]
 
 
 def test_character_probability_trace_uses_incremental_context():
@@ -309,6 +626,70 @@ def test_character_probability_trace_uses_incremental_context():
     assert short_trace.characters[0] == trace.characters[0]
     assert trace.next_tokens[0].token == "c"
     assert trace.next_tokens[0].probability == pytest.approx(8 / 11)
+    assert sum(item.probability for item in trace.distribution) == pytest.approx(1.0)
+    assert trace.characters[0].surprisal_bits == pytest.approx(-np.log2(10 / 13))
+
+
+def test_character_lab_visualizations_and_temperature_entropy():
+    tokenizer = CharTokenizer.from_text(["abc"])
+    model = AutoregressiveBigram(tokenizer, alpha=1.0)
+    model.count[tokenizer.bos_id, tokenizer.token_to_id["a"]] = 30
+    model.count[tokenizer.token_to_id["a"], tokenizer.token_to_id["b"]] = 30
+    runtime = {"bigram": (model, tokenizer)}
+    cold = trace_character_probabilities("a", runtime, temperature=0.5)[0]
+    neutral = trace_character_probabilities("a", runtime, temperature=1.0)[0]
+    hot = trace_character_probabilities("a", runtime, temperature=2.0)[0]
+
+    journey = plot_surprisal_journey(
+        [neutral], {"bigram": "Bigram"}, {"bigram": "#000000"}
+    ).to_dict()
+    keyboard = plot_probability_keyboard(neutral, "Bigram").to_dict()
+    laboratory = plot_temperature_laboratory(
+        {0.5: cold, 1.0: neutral, 2.0: hot}
+    ).to_dict()
+
+    assert distribution_entropy(cold) < distribution_entropy(hot)
+    assert journey["vconcat"][0]["title"] == "Character Surprisal Journey"
+    assert journey["vconcat"][2]["title"] == "Surprisal per Token"
+    assert keyboard["title"] == "Probability Keyboard · Bigram"
+    assert laboratory["vconcat"][0]["title"] == "Temperature Response of Top Tokens"
+
+
+def test_model_disagreement_and_completion_consensus_visualizations():
+    tokenizer = CharTokenizer.from_text(["abc"])
+    first = AutoregressiveBigram(tokenizer, alpha=1.0)
+    second = AutoregressiveBigram(tokenizer, alpha=1.0)
+    first.count[tokenizer.bos_id, tokenizer.token_to_id["a"]] = 20
+    second.count[tokenizer.bos_id, tokenizer.token_to_id["b"]] = 20
+    traces = trace_character_probabilities(
+        "", {"first": (first, tokenizer), "second": (second, tokenizer)}
+    )
+    labels = {"first": "First", "second": "Second"}
+
+    matrix = model_disagreement_matrix(traces)
+    disagreement = plot_model_disagreement(traces, labels).to_dict()
+    completions = {
+        "first": [GenerationCandidate("abc", [1], -1.0)],
+        "second": [
+            GenerationCandidate("abd", [2], -0.8),
+            GenerationCandidate("abc", [1], -1.2),
+        ],
+    }
+    consensus_frame = completion_consensus_frame(completions, labels)
+    consensus_summary = completion_consensus_summary(completions, labels)
+    consensus = plot_completion_consensus(completions, labels).to_dict()
+
+    assert matrix.loc["first", "first"] == pytest.approx(0.0)
+    assert matrix.loc["first", "second"] == pytest.approx(
+        matrix.loc["second", "first"]
+    )
+    assert matrix.loc["first", "second"] > 0
+    assert disagreement["vconcat"][1]["title"] == "Pairwise Jensen–Shannon Divergence"
+    assert len(consensus_frame) == 3
+    assert consensus_summary.iloc[0]["Candidate"] == "abc"
+    assert consensus_summary.iloc[0]["Support Rate"] == pytest.approx(1.0)
+    assert consensus["title"] == "Completion Consensus"
+    assert consensus["encoding"]["x"]["field"] == "Consensus Score"
 
 
 def test_probability_color_and_html_are_continuous_and_escaped():

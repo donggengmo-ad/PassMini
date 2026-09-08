@@ -15,6 +15,7 @@ from .data import PasswordDataset, collate_batch, read_dataset
 from .experiment import (
     AutoregressiveBigramConfig,
     AutoregressiveGRUConfig,
+    AutoregressiveMLPConfig,
     AutoregressiveModelConfig,
     AutoregressiveTCNConfig,
     AutoregressiveTransformerConfig,
@@ -24,10 +25,12 @@ from .inference import save_inference_config
 from .models import (
     AutoregressiveBigram,
     AutoregressiveGRU,
+    AutoregressiveMLP,
     AutoregressivePasswordModel,
     AutoregressiveTCN,
     AutoregressiveTransformer,
 )
+from .monitoring import TensorBoardMonitor
 from .training import build_scheduler, train, evaluate, load_checkpoint
 from .tokenizer import CharTokenizer
 
@@ -106,6 +109,13 @@ def build_model(
     model_config = config.model if isinstance(config, ExperimentConfig) else config
     if isinstance(model_config, AutoregressiveBigramConfig):
         return AutoregressiveBigram(tokenizer, alpha=model_config.alpha)
+    if isinstance(model_config, AutoregressiveMLPConfig):
+        return AutoregressiveMLP(
+            tokenizer,
+            tau=model_config.tau,
+            embedding_dim=model_config.embedding_dim,
+            hidden_size=model_config.hidden_size,
+        )
     if isinstance(model_config, AutoregressiveGRUConfig):
         return AutoregressiveGRU(
             tokenizer,
@@ -144,10 +154,19 @@ def build_optimizer(
     return torch.optim.Adam(model.parameters(), lr=config.training.learning_rate)
 
 
-def run_training_experiment(config: ExperimentConfig, use_best: bool=True, resume: bool=False) -> ExperimentArtifacts:
+def run_training_experiment(
+    config: ExperimentConfig,
+    use_best: bool = True,
+    resume: bool = False,
+    tensorboard_log_dir: str | Path | None = None,
+    tensorboard_log_interval: int = 100,
+) -> ExperimentArtifacts:
     """执行一次完整神经模型训练并保存训练/推理 artifact。
     :param config: 实验配置
     :param use_best: 是否在训练结束后加载验证集上最优的模型
+    :param resume: 是否从 output_dir 中的 latest checkpoint 恢复训练
+    :param tensorboard_log_dir: 可选的 TensorBoard event 目录
+    :param tensorboard_log_interval: batch 级训练和验证指标的记录间隔
     :return: 包含训练结果的 ExperimentArtifacts
     """
 
@@ -161,31 +180,56 @@ def run_training_experiment(config: ExperimentConfig, use_best: bool=True, resum
     optimizer = build_optimizer(model, config)
     scheduler = build_scheduler(optimizer, config.training.scheduler, config.training.num_epochs)
     model_config = asdict(config.model)
-    history = train(
-        model,
-        train_loader,
-        val_loader,
-        optimizer,
-        device=device,
-        max_norm=config.training.max_norm,
-        num_epochs=config.training.num_epochs,
-        save_path=config.data.output_dir,
-        scheduler=scheduler,
-        scheduler_config=config.training.scheduler,
-        model_config=model_config,
-        resume=resume
+    monitor = (
+        None
+        if tensorboard_log_dir is None
+        else TensorBoardMonitor.create(tensorboard_log_dir)
     )
-    if use_best:
-        model.load_state_dict(
-            load_checkpoint(
-                config.data.output_dir/'checkpoint_best.pt'
-            )["model_state_dict"]
+    try:
+        history = train(
+            model,
+            train_loader,
+            val_loader,
+            optimizer,
+            device=device,
+            max_norm=config.training.max_norm,
+            num_epochs=config.training.num_epochs,
+            save_path=config.data.output_dir,
+            scheduler=scheduler,
+            scheduler_config=config.training.scheduler,
+            model_config=model_config,
+            resume=resume,
+            monitor=monitor,
+            monitor_log_interval=tensorboard_log_interval,
         )
+        if use_best:
+            model.load_state_dict(
+                load_checkpoint(
+                    config.data.output_dir/'checkpoint_best.pt'
+                )["model_state_dict"]
+            )
 
-    test_loss = evaluate(model, test_loader, device=device)
-    save_training_artifact(config, tokenizer, history)
-    save_inference_artifact(config, model, tokenizer)
-    return ExperimentArtifacts(config, tokenizer, model, history, test_loss)
+        test_loss = evaluate(
+            model,
+            test_loader,
+            device=device,
+            monitor=monitor,
+            monitor_group="Test/Batch",
+            monitor_log_interval=tensorboard_log_interval,
+        )
+        if monitor is not None:
+            monitor.log_metrics(
+                "Loss",
+                {"test": test_loss},
+                max(len(history["train_loss"]), 1),
+                flush=True,
+            )
+        save_training_artifact(config, tokenizer, history)
+        save_inference_artifact(config, model, tokenizer)
+        return ExperimentArtifacts(config, tokenizer, model, history, test_loss)
+    finally:
+        if monitor is not None:
+            monitor.close()
 
 
 def save_training_artifact(config: ExperimentConfig, tokenizer: CharTokenizer, history: dict) -> None:

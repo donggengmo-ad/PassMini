@@ -10,6 +10,7 @@ from typing import Mapping
 import torch
 
 from .experiment import SchedulerConfig
+from .monitoring import TensorBoardMonitor
 from .models import AutoregressivePasswordModel
 
 
@@ -126,9 +127,14 @@ def train_one_epoch(
     criterion: torch.nn.CrossEntropyLoss | None = None,
     device: torch.device = torch.device("cpu"),
     max_norm: float | int = 1.0,
+    monitor: TensorBoardMonitor | None = None,
+    epoch_index: int = 0,
+    monitor_log_interval: int = 100,
 ) -> float:
-    """训练一个 epoch，返回非 PAD token 的平均交叉熵。"""
+    """训练一个 epoch，返回非 PAD token 的平均交叉熵并可实时记录进度。"""
 
+    if epoch_index < 0 or monitor_log_interval <= 0:
+        raise ValueError("epoch_index 不能为负数，monitor_log_interval 必须大于 0")
     pad_id = model.pad_id
     if criterion is None:
         criterion = torch.nn.CrossEntropyLoss(ignore_index=pad_id, reduction="sum")
@@ -136,7 +142,8 @@ def train_one_epoch(
     model.train()
     total_loss = 0.0
     total_tokens = 0
-    for inputs, targets in dataloader:
+    total_batches = len(dataloader)
+    for batch_index, (inputs, targets) in enumerate(dataloader, start=1):
         inputs = inputs.to(device)
         targets = targets.to(device)
         optimizer.zero_grad()
@@ -150,6 +157,18 @@ def train_one_epoch(
         optimizer.step()
         total_loss += loss.item()
         total_tokens += (flat_targets != pad_id).sum().item()
+        if monitor is not None and (
+            batch_index % monitor_log_interval == 0 or batch_index == total_batches
+        ):
+            global_step = epoch_index * max(total_batches, 1) + batch_index
+            monitor.log_metrics(
+                "Train/Batch",
+                {
+                    "running_loss": total_loss / total_tokens if total_tokens else -1.0,
+                    "epoch_progress": batch_index / max(total_batches, 1),
+                },
+                global_step,
+            )
     return total_loss / total_tokens if total_tokens > 0 else -1.0
 
 
@@ -159,9 +178,15 @@ def evaluate(
     criterion: torch.nn.CrossEntropyLoss | None = None,
     device: torch.device = torch.device("cpu"),
     verbose: bool = False,
+    monitor: TensorBoardMonitor | None = None,
+    monitor_group: str = "Evaluation/Batch",
+    monitor_step_offset: int = 0,
+    monitor_log_interval: int = 100,
 ) -> float:
-    """评估模型并返回非 PAD token 的平均交叉熵。"""
+    """评估模型并返回非 PAD token 的平均交叉熵，可选记录批次进度。"""
 
+    if monitor_step_offset < 0 or monitor_log_interval <= 0:
+        raise ValueError("monitor_step_offset 不能为负数，monitor_log_interval 必须大于 0")
     pad_id = model.pad_id
     if criterion is None:
         criterion = torch.nn.CrossEntropyLoss(ignore_index=pad_id, reduction="sum")
@@ -170,6 +195,7 @@ def evaluate(
     total_loss = 0.0
     total_tokens = 0
     with torch.inference_mode():
+        total_batches = len(dataloader)
         for index, (inputs, targets) in enumerate(dataloader, start=1):
             inputs = inputs.to(device)
             targets = targets.to(device)
@@ -183,6 +209,17 @@ def evaluate(
                 print(
                     f"Evaluating: {index}/{len(dataloader)}, "
                     f"current loss: {total_loss / total_tokens:.4f}"
+                )
+            if monitor is not None and (
+                index % monitor_log_interval == 0 or index == total_batches
+            ):
+                monitor.log_metrics(
+                    monitor_group,
+                    {
+                        "running_loss": total_loss / total_tokens if total_tokens else -1.0,
+                        "progress": index / max(total_batches, 1),
+                    },
+                    monitor_step_offset + index,
                 )
     return total_loss / total_tokens if total_tokens > 0 else -1.0
 
@@ -202,8 +239,13 @@ def train(
     scheduler: Scheduler | None = None,
     scheduler_config: SchedulerConfig | None = None,
     model_config: Mapping | None = None,
+    monitor: TensorBoardMonitor | None = None,
+    monitor_log_interval: int = 100,
 ) -> dict[str, list[float]]:
-    """训练模型，并可保存/恢复 optimizer 与 scheduler 状态。"""
+    """训练模型，并可保存/恢复状态以及实时写入 TensorBoard。"""
+
+    if monitor_log_interval <= 0:
+        raise ValueError("monitor_log_interval 必须大于 0")
 
     history: dict[str, list[float]] = {
         "train_loss": [],
@@ -246,17 +288,47 @@ def train(
             criterion=criterion,
             device=device,
             max_norm=max_norm,
+            monitor=monitor,
+            epoch_index=epoch,
+            monitor_log_interval=monitor_log_interval,
         )
         valid_loss = evaluate(
             model,
             valid_dataloader,
             criterion=criterion,
             device=device,
+            monitor=monitor,
+            monitor_group="Validation/Batch",
+            monitor_step_offset=epoch * len(valid_dataloader),
+            monitor_log_interval=monitor_log_interval,
         )
         history["train_loss"].append(train_loss)
         history["valid_loss"].append(valid_loss)
         history["epoch_seconds"].append(time.perf_counter() - start_time)
         _step_scheduler(scheduler, valid_loss)
+
+        if monitor is not None:
+            # epoch 标量共享横轴，便于在 TensorBoard 中直接比较训练、验证和泛化趋势。
+            monitor.log_metrics(
+                "Loss",
+                {
+                    "train": train_loss,
+                    "validation": valid_loss,
+                    "generalization_gap": valid_loss - train_loss,
+                },
+                epoch + 1,
+            )
+            monitor.log_metrics(
+                "Optimization",
+                {"learning_rate": history["learning_rate"][-1]},
+                epoch + 1,
+            )
+            monitor.log_metrics(
+                "Runtime",
+                {"epoch_seconds": history["epoch_seconds"][-1]},
+                epoch + 1,
+                flush=True,
+            )
 
         print(
             f"Epoch {epoch + 1}/{num_epochs} - 训练损失: {train_loss:.4f}, "

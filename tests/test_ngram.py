@@ -3,7 +3,6 @@ from re import Pattern
 from scripts.models import AutoregressiveBigram
 from scripts.data import PasswordDataset
 from scripts.tokenizer import CharTokenizer
-from scripts.util import filtered_probs_with_temperature
 import torch, pytest, re, math
 
 
@@ -37,11 +36,10 @@ def test_bigram_init():
     torch.testing.assert_close(probs.sum(),torch.tensor(1.0, dtype=probs.dtype))
     assert torch.all(probs >= 0)
     torch.testing.assert_close(probs[token.token_to_id['b']], probs[token.token_to_id['c']])
-    processed_probs = filtered_probs_with_temperature(
-        token,
-        probs,
+    processed_probs = model._next_token_probs(
+        torch.log(probs).unsqueeze(0),
         temperature=1.0,
-    )
+    )[0]
     torch.testing.assert_close(processed_probs[token.bos_id], torch.tensor(0.0, dtype=processed_probs.dtype))
     torch.testing.assert_close(processed_probs[token.pad_id], torch.tensor(0.0, dtype=processed_probs.dtype))
     torch.testing.assert_close(processed_probs[token.unk_id], torch.tensor(0.0, dtype=processed_probs.dtype))

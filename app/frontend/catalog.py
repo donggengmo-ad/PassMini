@@ -22,6 +22,8 @@ class ModelRecord:
     display_name: str
     artifact_dir: Path
     parameter_count: int
+    flops: int
+    training_sample_count: int | None
     color: str
     enabled: bool = True
 
@@ -40,10 +42,6 @@ class ModelRecord:
     @property
     def history_path(self) -> Path:
         return self.artifact_dir / "history.json"
-
-    @property
-    def config_path(self) -> Path:
-        return self.artifact_dir / "config.json"
 
     @property
     def evaluation_dir(self) -> Path:
@@ -120,6 +118,15 @@ def load_catalog(path: str | Path = DEFAULT_CATALOG_PATH) -> ModelCatalog:
         raw_parameter_count = item.get("parameter_count")
         if not isinstance(raw_parameter_count, int) or raw_parameter_count < 0:
             raise ValueError("parameter_count 必须是非负整数")
+        raw_flops = item.get("flops")
+        if not isinstance(raw_flops, int) or raw_flops < 0:
+            raise ValueError("flops 必须是非负整数")
+        raw_training_sample_count = item.get("training_sample_count")
+        if raw_training_sample_count is not None and (
+            not isinstance(raw_training_sample_count, int)
+            or raw_training_sample_count <= 0
+        ):
+            raise ValueError("training_sample_count 必须为 null 或正整数")
         raw_enabled = item.get("enabled", True)
         if not isinstance(raw_enabled, bool):
             raise ValueError("enabled 必须是布尔值")
@@ -133,6 +140,8 @@ def load_catalog(path: str | Path = DEFAULT_CATALOG_PATH) -> ModelCatalog:
                     catalog_path, _require_str(item, "artifact_dir")
                 ),
                 parameter_count=raw_parameter_count,
+                flops=raw_flops,
+                training_sample_count=raw_training_sample_count,
                 color=_require_str(item, "color"),
                 enabled=raw_enabled,
             )

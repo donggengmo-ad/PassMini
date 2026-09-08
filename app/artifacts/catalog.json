@@ -7,6 +7,8 @@
       "display_name": "Bigram · Baseline",
       "artifact_dir": "artifacts/baseline/bigram",
       "parameter_count": 0,
+      "flops": 2574,
+      "training_sample_count": 7745971,
       "color": "#f4b860",
       "enabled": true
     },
@@ -17,6 +19,8 @@
       "display_name": "GRU · Low",
       "artifact_dir": "artifacts/low/gru",
       "parameter_count": 188160,
+      "flops": 4882553,
+      "training_sample_count": 7745971,
       "color": "#49d3b4",
       "enabled": true
     },
@@ -27,6 +31,8 @@
       "display_name": "TCN · Low",
       "artifact_dir": "artifacts/low/tcn",
       "parameter_count": 137856,
+      "flops": 3576313,
+      "training_sample_count": 7745971,
       "color": "#54a7ff",
       "enabled": true
     },
@@ -37,6 +43,8 @@
       "display_name": "Transformer · Low",
       "artifact_dir": "artifacts/low/transformer",
       "parameter_count": 213888,
+      "flops": 5591625,
+      "training_sample_count": 7745971,
       "color": "#a98bff",
       "enabled": true
     },
@@ -47,8 +55,10 @@
       "display_name": "GRU · Medium",
       "artifact_dir": "artifacts/medium/gru",
       "parameter_count": 736768,
+      "flops": 19138041,
+      "training_sample_count": 7745971,
       "color": "#2ca88f",
-      "enabled": false
+      "enabled": true
     },
     {
       "id": "medium-tcn",
@@ -57,8 +67,10 @@
       "display_name": "TCN · Medium",
       "artifact_dir": "artifacts/medium/tcn",
       "parameter_count": 734720,
+      "flops": 19084793,
+      "training_sample_count": 7745971,
       "color": "#337fc4",
-      "enabled": false
+      "enabled": true
     },
     {
       "id": "medium-transformer",
@@ -67,8 +79,10 @@
       "display_name": "Transformer · Medium",
       "artifact_dir": "artifacts/medium/transformer",
       "parameter_count": 820992,
+      "flops": 21408049,
+      "training_sample_count": 7745971,
       "color": "#8068cb",
-      "enabled": false
+      "enabled": true
     },
     {
       "id": "high-gru",
@@ -77,8 +91,10 @@
       "display_name": "GRU · High",
       "artifact_dir": "artifacts/high/gru",
       "parameter_count": 2915328,
+      "flops": 75763961,
+      "training_sample_count": 7745971,
       "color": "#18715f",
-      "enabled": false
+      "enabled": true
     },
     {
       "id": "high-tcn",
@@ -87,8 +103,10 @@
       "display_name": "TCN · High",
       "artifact_dir": "artifacts/high/tcn",
       "parameter_count": 2911232,
+      "flops": 75657465,
+      "training_sample_count": 7745971,
       "color": "#215688",
-      "enabled": false
+      "enabled": true
     },
     {
       "id": "high-transformer",
@@ -97,7 +115,45 @@
       "display_name": "Transformer · High",
       "artifact_dir": "artifacts/high/transformer",
       "parameter_count": 3214848,
+      "flops": 83704881,
+      "training_sample_count": 7745971,
       "color": "#5f489e",
+      "enabled": true
+    },
+    {
+      "id": "low-mlp",
+      "tier": "low",
+      "model_type": "mlp",
+      "display_name": "MLP · Low",
+      "artifact_dir": "artifacts/low/mlp",
+      "parameter_count": 22912,
+      "flops": 591097,
+      "training_sample_count": 7745971,
+      "color": "#ff8f70",
+      "enabled": false
+    },
+    {
+      "id": "medium-mlp",
+      "tier": "medium",
+      "model_type": "mlp",
+      "display_name": "MLP · Medium",
+      "artifact_dir": "artifacts/medium/mlp",
+      "parameter_count": 176896,
+      "flops": 4591353,
+      "training_sample_count": 7745971,
+      "color": "#d9684a",
+      "enabled": false
+    },
+    {
+      "id": "high-mlp",
+      "tier": "high",
+      "model_type": "mlp",
+      "display_name": "MLP · High",
+      "artifact_dir": "artifacts/high/mlp",
+      "parameter_count": 1205760,
+      "flops": 31335161,
+      "training_sample_count": 7745971,
+      "color": "#a8442f",
       "enabled": false
     }
   ]

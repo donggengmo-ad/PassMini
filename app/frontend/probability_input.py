@@ -84,7 +84,7 @@ def character_input(
     *,
     key: str,
     max_length: int = 12,
-    placeholder: str = "Type a demo password",
+    placeholder: str = "请输入演示密码",
 ) -> str:
     """挂载逐键更新的受控输入组件，并返回当前文本。"""
 
@@ -135,7 +135,7 @@ def colored_password_html(characters: Sequence[tuple[str, float]]) -> str:
         )
     content = "".join(spans) or '<span style="color:var(--st-gray-text-color)">—</span>'
     return (
-        '<div aria-label="Character probabilities" '
+        '<div aria-label="逐字符概率" '
         'style="font-family:var(--st-code-font);font-size:2rem;font-weight:600;'
         f'letter-spacing:0.04em;line-height:1.5">{content}</div>'
     )

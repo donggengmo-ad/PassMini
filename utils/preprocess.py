@@ -5,7 +5,7 @@ import json
 
 # 数据配置
 config = experiment.DataConfig()
-source_path = Path("./data/raw/rockyou.txt")
+source_path = Path("../data/raw/rockyou.txt")
 tot_size = data.count_lines(source_path) * 0.9
 train_size = int(tot_size * 0.6)
 val_size = int(tot_size * 0.1)

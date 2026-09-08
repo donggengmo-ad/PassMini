@@ -131,6 +131,56 @@ class AutoregressivePasswordModel(nn.Module, PasswordModel):
         """消费形状 `[B]` 的 token，返回新的下一步状态。"""
         ...
 
+    @abstractmethod
+    def _select_cache(self, cache: object, indices: torch.Tensor) -> object:
+        """按 batch 索引选择、复制或重排具体模型的缓存。"""
+        ...
+
+    @abstractmethod
+    def _stack_caches(self, caches: Sequence[object]) -> object:
+        """沿 batch 维合并一组结构兼容的具体模型缓存。"""
+        ...
+
+    def select_state(
+        self,
+        state: AutoregressiveState,
+        indices: torch.Tensor | Sequence[int],
+    ) -> AutoregressiveState:
+        r"""按 batch 索引选择、复制或重排自回归状态。
+
+        搜索算法用它把保留下来的父节点缓存复制给多个子节点。`indices`
+        可以包含重复值，因此一次选择也能完成 beam 的父状态扩展。
+        """
+
+        index = torch.as_tensor(
+            indices,
+            dtype=torch.long,
+            device=state.next_logits.device,
+        )
+        if index.ndim != 1:
+            raise ValueError("indices 必须是一维整数索引")
+        selected_logits = state.next_logits.index_select(0, index)
+        return AutoregressiveState(selected_logits, self._select_cache(state.cache, index))
+
+    def stack_states(self, states: Sequence[AutoregressiveState]) -> AutoregressiveState:
+        r"""沿 batch 维合并多个结构兼容的自回归状态。
+
+        Best-First Search 会用它合并同一深度的独立堆节点，再进行一次批量
+        前推。不同深度的 Transformer KV cache 长度不同，不能直接合并。
+        """
+
+        values = list(states)
+        if not values:
+            raise ValueError("states 不能为空")
+        for state in values:
+            if state.next_logits.ndim != 2 or state.next_logits.size(1) != self.vocab_size:
+                raise ValueError("每个 next_logits 必须是 [B, vocab_size] 张量")
+        next_logits = torch.cat([state.next_logits for state in values], dim=0)
+        return AutoregressiveState(
+            next_logits,
+            self._stack_caches([state.cache for state in values]),
+        )
+
     def generate(
         self,
         max_length: int,
@@ -212,6 +262,32 @@ class AutoregressivePasswordModel(nn.Module, PasswordModel):
                     break
                 state = self.advance_state(state, next_ids)
         return [self.tokenizer.decode(ids) for ids in generated_ids.cpu().tolist()]
+
+
+def _teacher_forcing_log_probabilities(
+    model: AutoregressivePasswordModel,
+    texts: Sequence[str],
+) -> torch.Tensor:
+    """将字符串整理为一个 teacher-forcing batch，并用一次前向计算 `[B]` 分数。"""
+
+    text_list = list(texts)
+    if not text_list:
+        return torch.empty(0, dtype=torch.float32, device=model.device)
+    dataset = PasswordDataset(text_list, model.tokenizer)
+    input_ids, target_ids = collate_batch(
+        [dataset[index] for index in range(len(dataset))],
+        pad_id=model.pad_id,
+    )
+    input_ids = input_ids.to(model.device)
+    target_ids = target_ids.to(model.device)
+
+    # [B,L,V] -> [B,L]：只取每个真实目标 token 的 log probability，再忽略 PAD 求和。
+    logits = model(input_ids)
+    token_log_probs = torch.log_softmax(logits, dim=-1).gather(
+        -1, target_ids.unsqueeze(-1)
+    ).squeeze(-1)
+    token_log_probs = token_log_probs.masked_fill(target_ids == model.pad_id, 0.0)
+    return token_log_probs.sum(dim=-1)
 
 
 class AutoregressiveBigram(AutoregressivePasswordModel):
@@ -338,6 +414,139 @@ class AutoregressiveBigram(AutoregressivePasswordModel):
         next_logits = torch.log(self.count[current_ids].float() + self.alpha)
         return AutoregressiveState(next_logits=next_logits, cache=current_ids)
 
+    def _select_cache(self, cache: object, indices: torch.Tensor) -> torch.Tensor:
+        """沿第 0 维选择 Bigram 当前 token。"""
+
+        if not isinstance(cache, torch.Tensor):
+            raise ValueError("Bigram state.cache 必须是 current_ids tensor")
+        return cache.index_select(0, indices.to(cache.device))
+
+    def _stack_caches(self, caches: Sequence[object]) -> torch.Tensor:
+        """沿第 0 维合并 Bigram 当前 token。"""
+
+        if not all(isinstance(cache, torch.Tensor) for cache in caches):
+            raise ValueError("Bigram cache 必须全部是 tensor")
+        return torch.cat(list(caches), dim=0)
+
+
+class AutoregressiveMLP(AutoregressivePasswordModel):
+    r"""基于固定长度 Markov 上下文的权重共享 MLP 密码模型。
+
+    每个位置只观察包含当前输入在内的最近 ``tau`` 个 token；序列开头不足
+    ``tau`` 时使用 PAD 左填充。训练时一次构造所有滑动窗口，推理时只缓存
+    最近 ``tau`` 个 token，因此不需要随序列长度增长的状态。
+    """
+
+    model_type = "mlp"
+
+    def __init__(
+        self,
+        tokenizer: CharTokenizer,
+        tau: int = 4,
+        embedding_dim: int = 64,
+        hidden_size: int = 128,
+    ):
+        r"""初始化固定上下文 MLP。
+        :param tokenizer: 分词器对象
+        :param tau: 每次预测使用的最近 token 数量
+        :param embedding_dim: 字符嵌入和共享输出空间维度
+        :param hidden_size: MLP 隐藏层维度
+
+        输出路径固定为 ``tau 个 embedding 拼接 -> hidden -> embedding 空间
+        -> embedding.weight.T``，最后一层与输入 embedding 权重共享。
+        """
+
+        super().__init__()
+        if tau <= 0 or embedding_dim <= 0 or hidden_size <= 0:
+            raise ValueError("tau、embedding_dim、hidden_size 必须为正整数")
+        self.tokenizer = tokenizer
+        self.tau = int(tau)
+        self.embedding_dim = int(embedding_dim)
+        self.hidden_size = int(hidden_size)
+        self.embedding = nn.Embedding(
+            self.vocab_size, self.embedding_dim, padding_idx=self.pad_id
+        )
+        # 权重共享会让 PAD 行参与输出 logits；屏蔽梯度以保持左填充始终为零向量。
+        self.embedding.weight.register_hook(self._mask_pad_gradient)
+        self.input_projection = nn.Linear(
+            self.tau * self.embedding_dim, self.hidden_size
+        )
+        self.output_projection = nn.Linear(self.hidden_size, self.embedding_dim)
+
+    def _context_logits(self, context_ids: torch.Tensor) -> torch.Tensor:
+        """将 ``[..., tau]`` 上下文批量映射为 ``[..., vocab_size]`` logits。"""
+
+        if context_ids.ndim < 2 or context_ids.size(-1) != self.tau:
+            raise ValueError("MLP 上下文最后一维必须等于 tau")
+        embeddings = self.embedding(context_ids)
+        flattened = embeddings.flatten(start_dim=-2)
+        hidden = F.gelu(self.input_projection(flattened))
+        projected = self.output_projection(hidden)
+        return projected @ self.embedding.weight.T
+
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+        """批量前向，输入 ``[B,L]``，输出 ``[B,L,V]``。"""
+
+        if input_ids.ndim != 2:
+            raise ValueError("input_ids 必须是 [B,L] 张量")
+        # [B,L] -> [B,L,tau]：左侧补 PAD 后一次展开所有位置，避免逐位置 Python 循环。
+        padded_ids = F.pad(input_ids, (self.tau - 1, 0), value=self.pad_id)
+        context_ids = padded_ids.unfold(dimension=1, size=self.tau, step=1)
+        return self._context_logits(context_ids)
+
+    def initial_state(self, batch_size: int) -> AutoregressiveState:
+        """消费一批 BOS，缓存左填充后的 ``[B,tau]`` 最近 token。"""
+
+        if batch_size <= 0:
+            raise ValueError("batch_size 必须大于 0")
+        context_ids = torch.full(
+            (batch_size, self.tau),
+            self.pad_id,
+            dtype=torch.long,
+            device=self.device,
+        )
+        context_ids[:, -1] = self.tokenizer.bos_id
+        return AutoregressiveState(self._context_logits(context_ids), context_ids)
+
+    def advance_state(
+        self,
+        state: AutoregressiveState,
+        token_ids: torch.Tensor,
+    ) -> AutoregressiveState:
+        """丢弃最旧 token、追加 ``[B]`` 新 token，并批量计算下一步 logits。"""
+
+        if not isinstance(state.cache, torch.Tensor):
+            raise ValueError("MLP state.cache 必须是 context_ids tensor")
+        if token_ids.ndim != 1 or token_ids.size(0) != state.cache.size(0):
+            raise ValueError("token_ids 必须是与 cache batch 相同的 [B] 张量")
+        next_ids = token_ids.to(self.device, dtype=torch.long).unsqueeze(-1)
+        context_ids = torch.cat([state.cache[:, 1:], next_ids], dim=-1)
+        return AutoregressiveState(self._context_logits(context_ids), context_ids)
+
+    def _select_cache(self, cache: object, indices: torch.Tensor) -> torch.Tensor:
+        """沿第 0 维选择、复制或重排 MLP 上下文缓存。"""
+
+        if not isinstance(cache, torch.Tensor):
+            raise ValueError("MLP state.cache 必须是 context_ids tensor")
+        return cache.index_select(0, indices.to(cache.device))
+
+    def _stack_caches(self, caches: Sequence[object]) -> torch.Tensor:
+        """沿第 0 维合并固定宽度的 MLP 上下文缓存。"""
+
+        if not all(isinstance(cache, torch.Tensor) for cache in caches):
+            raise ValueError("MLP cache 必须全部是 tensor")
+        return torch.cat(list(caches), dim=0)
+
+    def log_probabilities(self, texts: Sequence[str]) -> torch.Tensor:
+        """使用一次滑动窗口前向批量计算字符串序列的自然对数概率。"""
+
+        return _teacher_forcing_log_probabilities(self, texts)
+
+    def log_probability(self, text: str) -> torch.Tensor:
+        """计算从 BOS 到文本再到 EOS 的自然对数概率。"""
+
+        return self.log_probabilities([text])[0]
+
 
 class AutoregressiveGRU(AutoregressivePasswordModel):
     """使用 Embedding、GRU 和固定权重共享输出层的密码模型。"""
@@ -416,6 +625,20 @@ class AutoregressiveGRU(AutoregressivePasswordModel):
         input_ids = token_ids.to(self.device).unsqueeze(1)
         logits, hidden = self.forward(input_ids, state.cache, return_hidden=True)
         return AutoregressiveState(logits[:, -1, :], hidden)
+
+    def _select_cache(self, cache: object, indices: torch.Tensor) -> torch.Tensor:
+        """沿 `[N,B,H]` hidden 的第 1 维选择 batch。"""
+
+        if not isinstance(cache, torch.Tensor):
+            raise ValueError("GRU state.cache 必须是 hidden tensor")
+        return cache.index_select(1, indices.to(cache.device))
+
+    def _stack_caches(self, caches: Sequence[object]) -> torch.Tensor:
+        """沿 `[N,B,H]` hidden 的第 1 维合并 batch。"""
+
+        if not all(isinstance(cache, torch.Tensor) for cache in caches):
+            raise ValueError("GRU cache 必须全部是 tensor")
+        return torch.cat(list(caches), dim=1)
 
     def _log_probabilities_from_ids(
         self,
@@ -596,18 +819,43 @@ class AutoregressiveTCN(AutoregressivePasswordModel):
             raise ValueError("TCN state.cache 必须是逐层历史缓存")
         return self._step(token_ids, state.cache)
 
+    def _select_cache(self, cache: object, indices: torch.Tensor) -> _TCNCache:
+        """沿第 0 维选择每层卷积历史的 batch。"""
+
+        if not isinstance(cache, _TCNCache):
+            raise ValueError("TCN state.cache 必须是逐层历史缓存")
+        return _TCNCache(
+            tuple(
+                history.index_select(0, indices.to(history.device))
+                for history in cache.layer_inputs
+            )
+        )
+
+    def _stack_caches(self, caches: Sequence[object]) -> _TCNCache:
+        """逐层合并具有相同窗口形状的卷积历史。"""
+
+        if not all(isinstance(cache, _TCNCache) for cache in caches):
+            raise ValueError("TCN cache 必须全部是逐层历史缓存")
+        typed_caches = list(caches)
+        layer_count = len(typed_caches[0].layer_inputs)
+        if any(len(cache.layer_inputs) != layer_count for cache in typed_caches):
+            raise ValueError("TCN cache 层数不一致")
+        return _TCNCache(
+            tuple(
+                torch.cat([cache.layer_inputs[layer_index] for cache in typed_caches], dim=0)
+                for layer_index in range(layer_count)
+            )
+        )
+
+    def log_probabilities(self, texts: Sequence[str]) -> torch.Tensor:
+        """使用一次因果卷积前向批量计算字符串序列的自然对数概率。"""
+
+        return _teacher_forcing_log_probabilities(self, texts)
+
     def log_probability(self, text: str) -> torch.Tensor:
         """计算从 BOS 到文本再到 EOS 的自然对数概率。"""
 
-        ids = self.tokenizer.encode(text)
-        input_ids = torch.tensor(
-            [[self.tokenizer.bos_id, *ids]], dtype=torch.long, device=self.device
-        )
-        target_ids = torch.tensor(
-            [[*ids, self.tokenizer.eos_id]], dtype=torch.long, device=self.device
-        )
-        token_log_probs = torch.log_softmax(self.forward(input_ids), dim=-1)
-        return token_log_probs.gather(-1, target_ids.unsqueeze(-1)).sum()
+        return self.log_probabilities([text])[0]
 
 
 @dataclass(frozen=True)
@@ -838,18 +1086,54 @@ class AutoregressiveTransformer(AutoregressivePasswordModel):
             raise ValueError("Transformer state.cache 必须是逐层 KV cache")
         return self._step(token_ids, state.cache)
 
+    def _select_cache(self, cache: object, indices: torch.Tensor) -> _TransformerCache:
+        """沿第 0 维选择每层 KV cache 的 batch。"""
+
+        if not isinstance(cache, _TransformerCache):
+            raise ValueError("Transformer state.cache 必须是逐层 KV cache")
+        return _TransformerCache(
+            layers=tuple(
+                _TransformerLayerCache(
+                    layer.keys.index_select(0, indices.to(layer.keys.device)),
+                    layer.values.index_select(0, indices.to(layer.values.device)),
+                )
+                for layer in cache.layers
+            ),
+            length=cache.length,
+        )
+
+    def _stack_caches(self, caches: Sequence[object]) -> _TransformerCache:
+        """逐层合并长度相同的 KV cache。"""
+
+        if not all(isinstance(cache, _TransformerCache) for cache in caches):
+            raise ValueError("Transformer cache 必须全部是逐层 KV cache")
+        typed_caches = list(caches)
+        length = typed_caches[0].length
+        layer_count = len(typed_caches[0].layers)
+        if any(cache.length != length for cache in typed_caches):
+            raise ValueError("不同序列长度的 Transformer KV cache 不能合并")
+        if any(len(cache.layers) != layer_count for cache in typed_caches):
+            raise ValueError("Transformer cache 层数不一致")
+        return _TransformerCache(
+            layers=tuple(
+                _TransformerLayerCache(
+                    torch.cat([cache.layers[layer_index].keys for cache in typed_caches], dim=0),
+                    torch.cat([cache.layers[layer_index].values for cache in typed_caches], dim=0),
+                )
+                for layer_index in range(layer_count)
+            ),
+            length=length,
+        )
+
+    def log_probabilities(self, texts: Sequence[str]) -> torch.Tensor:
+        """使用一次 masked self-attention 前向批量计算字符串序列的自然对数概率。"""
+
+        return _teacher_forcing_log_probabilities(self, texts)
+
     def log_probability(self, text: str) -> torch.Tensor:
         """计算从 BOS 到文本再到 EOS 的自然对数概率。"""
 
-        ids = self.tokenizer.encode(text)
-        input_ids = torch.tensor(
-            [[self.tokenizer.bos_id, *ids]], dtype=torch.long, device=self.device
-        )
-        target_ids = torch.tensor(
-            [[*ids, self.tokenizer.eos_id]], dtype=torch.long, device=self.device
-        )
-        token_log_probs = torch.log_softmax(self.forward(input_ids), dim=-1)
-        return token_log_probs.gather(-1, target_ids.unsqueeze(-1)).sum()
+        return self.log_probabilities([text])[0]
 
 
 __all__ = [
@@ -857,6 +1141,7 @@ __all__ = [
     "AutoregressiveState",
     "AutoregressivePasswordModel",
     "AutoregressiveBigram",
+    "AutoregressiveMLP",
     "AutoregressiveGRU",
     "AutoregressiveTCN",
     "AutoregressiveTransformer",

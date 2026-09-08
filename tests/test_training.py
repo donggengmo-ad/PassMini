@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from scripts.data import PasswordDataset, collate_batch
 from scripts.experiment import SchedulerConfig
 from scripts.models import AutoregressiveGRU
+from scripts.monitoring import TensorBoardMonitor
 from scripts.tokenizer import CharTokenizer
 from scripts.training import (
     build_scheduler,
@@ -161,3 +162,40 @@ def test_train_records_learning_rate_and_saves_latest_and_best(tmp_path):
     assert len(history["learning_rate"]) == 2
     assert (tmp_path / "checkpoint_latest.pt").is_file()
     assert (tmp_path / "checkpoint_best.pt").is_file()
+
+
+def test_train_logs_batch_and_epoch_metrics_to_monitor(tmp_path):
+    class FakeWriter:
+        def __init__(self):
+            self.scalars = []
+
+        def add_scalar(self, tag, scalar_value, global_step):
+            self.scalars.append((tag, float(scalar_value), global_step))
+
+        def flush(self):
+            pass
+
+        def close(self):
+            pass
+
+    model, loader, criterion = make_training_objects()
+    writer = FakeWriter()
+    monitor = TensorBoardMonitor(writer)
+
+    train(
+        model,
+        loader,
+        loader,
+        torch.optim.Adam(model.parameters(), lr=0.01),
+        criterion=criterion,
+        num_epochs=1,
+        save_path=tmp_path,
+        monitor=monitor,
+        monitor_log_interval=1,
+    )
+
+    tags = {tag for tag, _, _ in writer.scalars}
+    assert "Train/Batch/running_loss" in tags
+    assert "Validation/Batch/running_loss" in tags
+    assert {"Loss/train", "Loss/validation", "Loss/generalization_gap"} <= tags
+    assert {"Optimization/learning_rate", "Runtime/epoch_seconds"} <= tags

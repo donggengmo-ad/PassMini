@@ -7,8 +7,10 @@ import streamlit as st
 
 # Streamlit 以 app 目录中的脚本启动，需要显式加入仓库根目录以复用 scripts。
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+project_root = str(PROJECT_ROOT)
+if project_root in sys.path:
+    sys.path.remove(project_root)
+sys.path.insert(0, project_root)
 
 from app.frontend.catalog import load_catalog
 from app.frontend.components import initialize_selection

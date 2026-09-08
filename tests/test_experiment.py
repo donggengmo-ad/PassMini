@@ -7,6 +7,7 @@ import torch
 from scripts.experiment import (
     AutoregressiveBigramConfig,
     AutoregressiveGRUConfig,
+    AutoregressiveMLPConfig,
     AutoregressiveTCNConfig,
     AutoregressiveTransformerConfig,
     ExperimentConfig,
@@ -33,6 +34,7 @@ def test_experiment_defaults_are_canonical_and_independent():
     ("payload", "expected"),
     [
         ({"model_type": "bigram", "alpha": 0.5}, AutoregressiveBigramConfig),
+        ({"model_type": "mlp", "tau": 4}, AutoregressiveMLPConfig),
         ({"model_type": "gru", "embedding_dim": 8}, AutoregressiveGRUConfig),
         ({"model_type": "tcn", "channels": 8}, AutoregressiveTCNConfig),
         ({"model_type": "transformer", "d_model": 8, "nhead": 2}, AutoregressiveTransformerConfig),
@@ -59,6 +61,8 @@ def test_model_config_rejects_legacy_fields(payload):
 def test_model_configs_validate_structure():
     with pytest.raises(ValueError):
         AutoregressiveGRUConfig(hidden_size=0)
+    with pytest.raises(ValueError):
+        AutoregressiveMLPConfig(tau=0)
     with pytest.raises(ValueError):
         AutoregressiveTCNConfig(dilations=())
     with pytest.raises(ValueError):

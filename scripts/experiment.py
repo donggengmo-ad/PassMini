@@ -35,6 +35,24 @@ class AutoregressiveBigramConfig:
 
 
 @dataclass
+class AutoregressiveMLPConfig:
+    """固定上下文 MLP 模型结构配置。
+    :param tau: 每次预测使用的最近 token 数量
+    :param embedding_dim: 输入嵌入和共享输出空间维度
+    :param hidden_size: MLP 隐藏层维度
+    """
+
+    model_type: Literal["mlp"] = "mlp"
+    tau: int = 4
+    embedding_dim: int = 64
+    hidden_size: int = 128
+
+    def __post_init__(self) -> None:
+        if self.tau <= 0 or self.embedding_dim <= 0 or self.hidden_size <= 0:
+            raise ValueError("tau、embedding_dim、hidden_size 必须大于 0")
+
+
+@dataclass
 class AutoregressiveGRUConfig:
     """固定权重共享 GRU 模型结构配置。
     :param embedding_dim: 输入嵌入维度
@@ -106,6 +124,7 @@ class AutoregressiveTransformerConfig:
 
 AutoregressiveModelConfig = (
     AutoregressiveBigramConfig
+    | AutoregressiveMLPConfig
     | AutoregressiveGRUConfig
     | AutoregressiveTCNConfig
     | AutoregressiveTransformerConfig
@@ -198,6 +217,7 @@ class ExperimentConfig:
 
         expected = {
             AutoregressiveBigramConfig: "bigram",
+            AutoregressiveMLPConfig: "mlp",
             AutoregressiveGRUConfig: "gru",
             AutoregressiveTCNConfig: "tcn",
             AutoregressiveTransformerConfig: "transformer",
@@ -243,6 +263,7 @@ def model_config_from_dict(payload: Mapping) -> AutoregressiveModelConfig:
     model_type = payload.get("model_type")
     allowed_fields = {
         "bigram": {"model_type", "alpha", "vocab_size"},
+        "mlp": {"model_type", "tau", "embedding_dim", "hidden_size", "vocab_size"},
         "gru": {"model_type", "embedding_dim", "hidden_size", "num_layers", "vocab_size"},
         "tcn": {"model_type", "embedding_dim", "channels", "kernel_size", "dilations", "vocab_size"},
         "transformer": {
@@ -261,6 +282,12 @@ def model_config_from_dict(payload: Mapping) -> AutoregressiveModelConfig:
             raise ValueError(f"{model_type} 配置包含不支持的字段: {sorted(unknown)}")
     if model_type == "bigram":
         return AutoregressiveBigramConfig(alpha=float(payload.get("alpha", 1.0)))
+    if model_type == "mlp":
+        return AutoregressiveMLPConfig(
+            tau=int(payload.get("tau", 4)),
+            embedding_dim=int(payload.get("embedding_dim", 64)),
+            hidden_size=int(payload.get("hidden_size", 128)),
+        )
     if model_type == "gru":
         return AutoregressiveGRUConfig(
             embedding_dim=int(payload.get("embedding_dim", 64)),
@@ -288,6 +315,7 @@ def model_config_from_dict(payload: Mapping) -> AutoregressiveModelConfig:
 __all__ = [
     "DataConfig",
     "AutoregressiveBigramConfig",
+    "AutoregressiveMLPConfig",
     "AutoregressiveGRUConfig",
     "AutoregressiveTCNConfig",
     "AutoregressiveTransformerConfig",
