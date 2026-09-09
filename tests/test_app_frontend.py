@@ -7,6 +7,7 @@ import pytest
 
 from app.frontend.catalog import load_catalog
 from app.frontend.components import preset_model_ids
+from app.frontend.model_icons import model_icon_html
 from app.frontend.probability_input import colored_password_html, probability_color
 from app.frontend.library import (
     CoverageData,
@@ -60,6 +61,62 @@ from app.frontend.warehouse import get_runtime_model, read_model_metadata
 from scripts.models import AutoregressiveBigram
 from scripts.inference import GenerationCandidate
 from scripts.tokenizer import CharTokenizer
+
+
+@pytest.mark.parametrize(
+    "model_type", ["bigram", "mlp", "tcn", "gru", "transformer"]
+)
+def test_model_family_icons_are_accessible_css_only_svg(model_type):
+    html = model_icon_html(model_type)
+
+    assert '<svg viewBox="0 0 ' in html
+    assert 'role="img"' in html
+    assert "aria-label=" in html
+    assert ".pm-model-icon:hover" in html
+    assert "prefers-reduced-motion: reduce" in html
+    assert "<script" not in html
+
+
+def test_gru_icon_uses_one_cell_and_transformer_traverses_five_queries():
+    gru = model_icon_html("gru")
+    transformer = model_icon_html("transformer")
+
+    assert gru.count('<rect class="pm-cell"') == 1
+    assert gru.count('<circle class="pm-state-shell"') == 1
+    assert 'class="pm-state-liquid"' in gru
+    assert 'class="pm-flow pm-gru-drain"' in gru
+    assert 'class="pm-flow pm-gru-state-return"' in gru
+    assert "hₜ₋₁" not in gru
+    assert ">hₜ<" not in gru
+    assert transformer.count('<circle class="pm-node pm-q ') == 5
+    assert transformer.count('<circle class="pm-node pm-k pm-weight-') == 5
+    assert transformer.count('<circle class="pm-node pm-v pm-weight-') == 5
+    assert transformer.count('<g class="pm-attention-fan pm-fan-') == 5
+
+
+def test_mlp_icon_keeps_static_wires_under_seamless_flow_animation():
+    html = model_icon_html("mlp")
+
+    assert "pm-token-text" not in html
+    assert html.count('<rect class="pm-token"') == 8
+    assert '<g clip-path="url(#pm-mlp-window)">' in html
+    assert '<g class="pm-mlp-tokens">' in html
+    assert "to { transform:translateX(260px) }" in html
+    assert 'class="pm-wire"' in html
+    assert 'class="pm-mlp-flow pm-mlp-flow-a"' in html
+    assert 'class="pm-mlp-flow pm-mlp-flow-b"' in html
+
+
+def test_tcn_icon_uses_compact_unlabelled_kernel():
+    html = model_icon_html("tcn")
+
+    assert "causal k = 3" not in html
+    assert 'class="pm-kernel-box" x="24" y="39" width="116" height="32"' in html
+
+
+def test_model_family_icon_rejects_unknown_type():
+    with pytest.raises(ValueError, match="不支持的模型图标"):
+        model_icon_html("cnn")
 
 
 def test_default_catalog_and_artifacts_are_consistent():

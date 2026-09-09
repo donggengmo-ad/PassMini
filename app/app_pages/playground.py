@@ -31,7 +31,7 @@ records = selected_records(catalog)
 st.title("Playground", anchor=False)
 render_current_selection(records)
 st.warning(
-    "请只输入演示文本，不要输入正在使用的真实密码。输入不会由应用主动保存。",
+    "输入不会被记录，但不建议输入正在使用的真实密码。",
     icon=":material/warning:",
 )
 if not records:
