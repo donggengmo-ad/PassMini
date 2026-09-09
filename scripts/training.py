@@ -246,6 +246,8 @@ def train(
 
     if monitor_log_interval <= 0:
         raise ValueError("monitor_log_interval 必须大于 0")
+    if len(train_dataloader) == 0 or len(valid_dataloader) == 0:
+        raise ValueError("训练集和验证集必须至少各包含一个 batch")
 
     history: dict[str, list[float]] = {
         "train_loss": [],
@@ -259,6 +261,15 @@ def train(
         if save_path is None:
             raise ValueError("resume=True 时必须提供 save_path")
         checkpoint = load_checkpoint(save_path / "checkpoint_latest.pt", device)
+        # 先检查语义再写入权重：词表大小相同，不代表每个 ID 对应的字符相同。
+        if checkpoint.get("tokenizer_state_dict") != model.tokenizer.state_dict():
+            raise ValueError("checkpoint 的 tokenizer 与当前模型不一致")
+        if model_config is not None and checkpoint.get("model_config") != dict(model_config):
+            raise ValueError("checkpoint 的 model_config 与当前配置不一致")
+        if (checkpoint.get("scheduler_state_dict") is None) != (scheduler is None):
+            raise ValueError("checkpoint 与当前配置的 scheduler 启用状态不一致")
+        if scheduler_config is not None and checkpoint.get("scheduler_config") != asdict(scheduler_config):
+            raise ValueError("checkpoint 的 scheduler_config 与当前配置不一致")
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         if scheduler is not None:

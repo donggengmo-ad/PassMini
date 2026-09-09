@@ -63,10 +63,27 @@ def _lines(
 
 
 def _bigram_svg() -> str:
+    # 每根柱使用独立但首尾闭合的高度序列，表示条件分布反复更新，而非行进波。
+    levels = (
+        (.22, .48, .31, .66, .38, .57),
+        (.35, .71, .46, .28, .62, .41),
+        (.58, .32, .77, .49, .68, .36),
+        (.74, .52, .39, .83, .56, .69),
+        (.43, .86, .61, .47, .79, .54),
+        (.91, .63, .82, .58, .73, .88),
+        (.67, .89, .55, .76, .48, .81),
+        (.52, .37, .72, .59, .84, .44),
+        (.79, .46, .64, .35, .57, .71),
+        (.31, .61, .42, .74, .29, .53),
+        (.47, .26, .56, .33, .65, .39),
+        (.25, .44, .30, .52, .36, .21),
+    )
     bars = "".join(
         f'<rect class="pm-bar pm-bar-{index}" x="{35 + index * 24}" y="58" '
-        'width="14" height="72" rx="4" />'
-        for index in range(12)
+        f'width="14" height="72" rx="4" style="'
+        + ";".join(f"--pm-h{step}:{height}" for step, height in enumerate(sequence))
+        + '" />'
+        for index, sequence in enumerate(levels)
     )
     return f"""
     <svg viewBox="0 0 340 175" role="img" aria-label="{_FAMILY_LABELS['bigram']}">
@@ -91,11 +108,11 @@ def _mlp_svg() -> str:
         + _lines(input_x, 73, hidden_x, 112, "pm-mlp-flow pm-mlp-flow-a")
         + _lines(hidden_x, 120, output_x, 151, "pm-mlp-flow pm-mlp-flow-b")
     )
-    # 前后两组矩形相差一个完整周期，向右平移后首尾画面完全一致。
+    # 右侧保留一整组副本；向左平移 260px 后与起始画面像素级一致。
     tokens = "".join(
         f'<rect class="pm-token" x="{56 + index * 65}" y="20" '
         'width="28" height="18" rx="5" />'
-        for index in range(-4, 4)
+        for index in range(-4, 8)
     )
     input_nodes = "".join(
         f'<circle class="pm-node" cx="{x}" cy="69" r="8" />' for x in input_x
@@ -131,19 +148,28 @@ def _tcn_svg() -> str:
     )
     return f"""
     <svg viewBox="0 0 340 180" role="img" aria-label="{_FAMILY_LABELS['tcn']}">
+      <defs>
+        <marker id="pm-tcn-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+          <path class="pm-tcn-marker" d="M0 0 L10 5 L0 10 z" />
+        </marker>
+      </defs>
       <path class="pm-causal-line" d="M25 111 H315" />
       {tokens}
       <g class="pm-tcn-kernel">
         <rect class="pm-kernel-box" x="24" y="39" width="116" height="32" rx="9" />
-        <circle class="pm-kernel-tap" cx="38" cy="55" r="4" />
-        <circle class="pm-kernel-tap" cx="82" cy="55" r="4" />
-        <circle class="pm-kernel-tap" cx="126" cy="55" r="4" />
-        <line class="pm-active-wire" x1="38" y1="71" x2="38" y2="122" />
-        <line class="pm-active-wire" x1="82" y1="71" x2="82" y2="122" />
-        <line class="pm-active-wire" x1="126" y1="71" x2="126" y2="122" />
-        <rect class="pm-tcn-highlight" x="25" y="122" width="26" height="26" rx="7" />
-        <rect class="pm-tcn-highlight" x="69" y="122" width="26" height="26" rx="7" />
-        <rect class="pm-tcn-highlight" x="113" y="122" width="26" height="26" rx="7" />
+        <circle class="pm-kernel-tap pm-tcn-weight-0" cx="38" cy="55" r="4" />
+        <circle class="pm-kernel-tap pm-tcn-weight-1" cx="82" cy="55" r="4" />
+        <circle class="pm-kernel-tap pm-tcn-weight-2" cx="126" cy="55" r="4" />
+        <line class="pm-active-wire pm-tcn-weight-0" x1="38" y1="71" x2="38" y2="122" />
+        <line class="pm-active-wire pm-tcn-weight-1" x1="82" y1="71" x2="82" y2="122" />
+        <line class="pm-active-wire pm-tcn-weight-2" x1="126" y1="71" x2="126" y2="122" />
+        <rect class="pm-tcn-highlight pm-tcn-weight-0" x="25" y="122" width="26" height="26" rx="7" />
+        <rect class="pm-tcn-highlight pm-tcn-weight-1" x="69" y="122" width="26" height="26" rx="7" />
+        <rect class="pm-tcn-highlight pm-tcn-weight-2" x="113" y="122" width="26" height="26" rx="7" />
+        <g class="pm-tcn-output">
+          <path class="pm-tcn-output-arrow" marker-end="url(#pm-tcn-arrow)" d="M140 55 H159" />
+          <rect class="pm-tcn-output-box" x="162" y="47" width="16" height="16" rx="3" />
+        </g>
       </g>
       <text class="pm-caption" x="170" y="169" text-anchor="middle">shared kernel scans the sequence</text>
     </svg>
@@ -186,13 +212,13 @@ def _gru_svg() -> str:
       <path class="pm-wire" marker-end="url(#pm-gru-arrow)" d="M212 93 H316" />
       <circle class="pm-drain-drop" cx="130" cy="18" r="4" />
 
-      <path class="pm-flow pm-gru-hidden-in" d="M75 78 C95 70 111 70 129 70" />
-      <path class="pm-flow pm-gru-retained" d="M161 70 C181 70 188 82 198 88" />
-      <path class="pm-flow pm-gru-to-update" d="M198 99 C184 110 172 116 161 116" />
-      <path class="pm-flow pm-gru-state-return" d="M129 116 C105 116 88 105 74 98" />
-      <path class="pm-flow pm-gru-drain" d="M145 54 C145 39 130 35 130 23" />
-      <path class="pm-flow pm-gru-input" d="M205 169 V101" />
-      <path class="pm-flow pm-gru-output" d="M212 93 H316" />
+      <path pathLength="1" class="pm-flow pm-gru-hidden-in" d="M75 78 C95 70 111 70 129 70" />
+      <path pathLength="1" class="pm-flow pm-gru-retained" d="M161 70 C181 70 188 82 198 88" />
+      <path pathLength="1" class="pm-flow pm-gru-to-update" d="M198 99 C184 110 172 116 161 116" />
+      <path pathLength="1" class="pm-flow pm-gru-state-return" d="M129 116 C105 116 88 105 74 98" />
+      <path pathLength="1" class="pm-flow pm-gru-drain" d="M145 54 C145 39 130 35 130 23" />
+      <path pathLength="1" class="pm-flow pm-gru-input" d="M205 169 V101" />
+      <path pathLength="1" class="pm-flow pm-gru-output" d="M212 93 H316" />
       <text class="pm-symbol" x="299" y="82">yₜ</text>
       <text class="pm-symbol" x="214" y="170">xₜ</text>
     </svg>
@@ -201,6 +227,13 @@ def _gru_svg() -> str:
 
 def _transformer_svg() -> str:
     node_x = (46, 108, 170, 232, 294)
+    attention_weights = (
+        (.86, .28, .56, .20, .45),
+        (.34, .90, .20, .57, .28),
+        (.63, .24, .95, .30, .54),
+        (.22, .68, .35, .90, .24),
+        (.48, .37, .72, .43, .95),
+    )
     query_nodes = "".join(
         f'<circle class="pm-node pm-q pm-q-{index}" cx="{x}" cy="31" r="9" />'
         for index, x in enumerate(node_x)
@@ -220,8 +253,10 @@ def _transformer_svg() -> str:
     fans = "".join(
         '<g class="pm-attention-fan pm-fan-{index}">'.format(index=query_index)
         + "".join(
-            f'<line x1="{query_x}" y1="40" x2="{key_x}" y2="82" />'
-            for key_x in node_x
+            f'<line class="pm-attention-edge" x1="{query_x}" y1="40" '
+            f'x2="{key_x}" y2="82" style="--pm-edge-opacity:{weight};'
+            f'--pm-edge-width:{0.8 + 2.6 * weight:.2f}px" />'
+            for key_x, weight in zip(node_x, attention_weights[query_index])
         )
         + '</g>'
         for query_index, query_x in enumerate(node_x)
@@ -283,37 +318,59 @@ def model_icon_html(model_type: str) -> str:
       .pm-model-icon .pm-layer-label-right {{ text-anchor: start; }}
       .pm-model-icon .pm-caption {{ font-size: 10px; opacity: .64; }}
 
-      .pm-model-icon .pm-bar {{ fill: var(--pm-accent); opacity: .82; transform-box: fill-box; transform-origin: center bottom; }}
-      .pm-model-icon .pm-bar-0, .pm-model-icon .pm-bar-11 {{ transform: scaleY(.18); }}
-      .pm-model-icon .pm-bar-1, .pm-model-icon .pm-bar-10 {{ transform: scaleY(.28); }}
-      .pm-model-icon .pm-bar-2, .pm-model-icon .pm-bar-9 {{ transform: scaleY(.43); }}
-      .pm-model-icon .pm-bar-3, .pm-model-icon .pm-bar-8 {{ transform: scaleY(.64); }}
-      .pm-model-icon .pm-bar-4, .pm-model-icon .pm-bar-7 {{ transform: scaleY(.82); }}
-      .pm-model-icon .pm-bar-5, .pm-model-icon .pm-bar-6 {{ transform: scaleY(1); }}
-      .pm-model-icon:hover .pm-bar {{ animation: pm-bigram-wave 4.8s ease-in-out infinite; animation-delay: var(--pm-delay, 0ms); }}
-      .pm-model-icon:hover .pm-bar-0 {{ --pm-delay: 0ms; }} .pm-model-icon:hover .pm-bar-1 {{ --pm-delay: -90ms; }}
-      .pm-model-icon:hover .pm-bar-2 {{ --pm-delay: -180ms; }} .pm-model-icon:hover .pm-bar-3 {{ --pm-delay: -270ms; }}
-      .pm-model-icon:hover .pm-bar-4 {{ --pm-delay: -360ms; }} .pm-model-icon:hover .pm-bar-5 {{ --pm-delay: -450ms; }}
-      .pm-model-icon:hover .pm-bar-6 {{ --pm-delay: -540ms; }} .pm-model-icon:hover .pm-bar-7 {{ --pm-delay: -630ms; }}
-      .pm-model-icon:hover .pm-bar-8 {{ --pm-delay: -720ms; }} .pm-model-icon:hover .pm-bar-9 {{ --pm-delay: -810ms; }}
-      .pm-model-icon:hover .pm-bar-10 {{ --pm-delay: -900ms; }} .pm-model-icon:hover .pm-bar-11 {{ --pm-delay: -990ms; }}
-      @keyframes pm-bigram-wave {{ 0%,100% {{ transform:scaleY(.22) }} 22% {{ transform:scaleY(1) }} 48% {{ transform:scaleY(.32) }} 72% {{ transform:scaleY(.78) }} }}
+      .pm-model-icon .pm-bar {{ fill: var(--pm-accent); opacity: .82; transform-box: fill-box; transform-origin: center bottom; transform:scaleY(var(--pm-h0)); }}
+      .pm-model-icon:hover .pm-bar {{ animation: pm-bigram-fluctuate 5.4s ease-in-out infinite; }}
+      @keyframes pm-bigram-fluctuate {{
+        0%,100% {{ transform:scaleY(var(--pm-h0)) }}
+        17% {{ transform:scaleY(var(--pm-h1)) }}
+        34% {{ transform:scaleY(var(--pm-h2)) }}
+        52% {{ transform:scaleY(var(--pm-h3)) }}
+        70% {{ transform:scaleY(var(--pm-h4)) }}
+        86% {{ transform:scaleY(var(--pm-h5)) }}
+      }}
 
       .pm-model-icon .pm-window {{ fill: none; stroke: color-mix(in srgb, var(--pm-accent) 58%, transparent); stroke-width: 1.4; stroke-dasharray: 5 4; }}
       .pm-model-icon .pm-mlp-flow {{ fill:none; stroke:var(--pm-accent); stroke-width:2.8; stroke-linecap:round; stroke-dasharray:7 96; opacity:0; }}
-      .pm-model-icon:hover .pm-mlp-tokens {{ animation: pm-context-shift 4.6s linear infinite; }}
-      .pm-model-icon:hover .pm-mlp-flow-a {{ animation: pm-flow-a 4.6s linear infinite; }}
-      .pm-model-icon:hover .pm-mlp-flow-b {{ animation: pm-flow-b 4.6s linear infinite; }}
-      @keyframes pm-context-shift {{ from {{ transform:translateX(0) }} to {{ transform:translateX(260px) }} }}
-      @keyframes pm-flow-a {{ 0%,24%,62%,100% {{ opacity:0;stroke-dashoffset:100 }} 32%,52% {{ opacity:.95 }} 60% {{ opacity:0;stroke-dashoffset:0 }} }}
-      @keyframes pm-flow-b {{ 0%,43%,82%,100% {{ opacity:0;stroke-dashoffset:100 }} 51%,72% {{ opacity:.95 }} 80% {{ opacity:0;stroke-dashoffset:0 }} }}
+      .pm-model-icon:hover .pm-mlp-tokens {{ animation: pm-context-shift 6.4s linear infinite; }}
+      .pm-model-icon:hover .pm-mlp-flow-a {{ animation: pm-flow-a 1.6s linear infinite; }}
+      .pm-model-icon:hover .pm-mlp-flow-b {{ animation: pm-flow-b 1.6s linear infinite; }}
+      @keyframes pm-context-shift {{
+        0%,17% {{ transform:translateX(0) }} 25%,42% {{ transform:translateX(-65px) }}
+        50%,67% {{ transform:translateX(-130px) }} 75%,92% {{ transform:translateX(-195px) }}
+        100% {{ transform:translateX(-260px) }}
+      }}
+      @keyframes pm-flow-a {{
+        0%,6% {{ opacity:0;stroke-dashoffset:100 }} 10%,30% {{ opacity:.95 }}
+        34%,100% {{ opacity:0;stroke-dashoffset:0 }}
+      }}
+      @keyframes pm-flow-b {{
+        0%,34% {{ opacity:0;stroke-dashoffset:100 }} 39%,59% {{ opacity:.95 }}
+        64%,100% {{ opacity:0;stroke-dashoffset:0 }}
+      }}
 
       .pm-model-icon .pm-kernel-box {{ fill: color-mix(in srgb, var(--pm-accent) 12%, var(--st-secondary-background-color)); stroke: var(--pm-accent); stroke-width: 1.8; }}
-      .pm-model-icon .pm-kernel-tap {{ fill: var(--pm-accent); }}
-      .pm-model-icon .pm-active-wire {{ stroke: var(--pm-accent); stroke-width: 1.8; stroke-dasharray: 5 4; }}
-      .pm-model-icon .pm-tcn-highlight {{ fill: var(--pm-accent); opacity: .34; }}
-      .pm-model-icon:hover .pm-tcn-kernel {{ animation: pm-kernel-scan 4.8s ease-in-out infinite; }}
-      @keyframes pm-kernel-scan {{ 0% {{ transform:translateX(0);opacity:0 }} 8% {{ opacity:1 }} 25% {{ transform:translateX(44px) }} 42% {{ transform:translateX(88px) }} 59% {{ transform:translateX(132px) }} 76% {{ transform:translateX(176px);opacity:1 }} 87% {{ transform:translateX(176px);opacity:0 }} 88% {{ transform:translateX(0);opacity:0 }} 100% {{ opacity:1 }} }}
+      .pm-model-icon .pm-tcn-weight-0 {{ --pm-tcn-opacity:.92; --pm-tcn-wire-width:2.4; --pm-tcn-projection-opacity:.42; }}
+      .pm-model-icon .pm-tcn-weight-1 {{ --pm-tcn-opacity:.38; --pm-tcn-wire-width:1.2; --pm-tcn-projection-opacity:.16; }}
+      .pm-model-icon .pm-tcn-weight-2 {{ --pm-tcn-opacity:.68; --pm-tcn-wire-width:1.8; --pm-tcn-projection-opacity:.30; }}
+      .pm-model-icon .pm-kernel-tap {{ fill:var(--pm-accent); fill-opacity:var(--pm-tcn-opacity); }}
+      .pm-model-icon .pm-active-wire {{ stroke:var(--pm-accent); stroke-opacity:var(--pm-tcn-opacity); stroke-width:var(--pm-tcn-wire-width); stroke-dasharray:5 4; }}
+      .pm-model-icon .pm-tcn-highlight {{ fill:var(--pm-accent); opacity:var(--pm-tcn-projection-opacity); }}
+      .pm-model-icon .pm-tcn-output {{ opacity:0; }}
+      .pm-model-icon .pm-tcn-output-arrow {{ fill:none; stroke:var(--pm-accent); stroke-width:1.7; }}
+      .pm-model-icon .pm-tcn-marker,
+      .pm-model-icon .pm-tcn-output-box {{ fill:var(--pm-accent); }}
+      .pm-model-icon:hover .pm-tcn-kernel {{ animation: pm-kernel-scan 4.8s linear infinite; }}
+      .pm-model-icon:hover .pm-tcn-output {{ animation:pm-tcn-output-pulse 1.2s ease-in-out infinite; }}
+      @keyframes pm-kernel-scan {{
+        0%,15% {{ transform:translateX(0);opacity:1 }} 25%,40% {{ transform:translateX(44px);opacity:1 }}
+        50%,65% {{ transform:translateX(88px);opacity:1 }} 75%,90% {{ transform:translateX(132px);opacity:1 }}
+        93% {{ transform:translateX(132px);opacity:0 }} 94% {{ transform:translateX(0);opacity:0 }}
+        100% {{ transform:translateX(0);opacity:1 }}
+      }}
+      @keyframes pm-tcn-output-pulse {{
+        0%,8%,72%,100% {{ opacity:0 }}
+        18%,58% {{ opacity:.9 }}
+      }}
 
       .pm-model-icon .pm-cell {{ fill: color-mix(in srgb, var(--pm-accent) 9%, var(--st-secondary-background-color)); stroke: var(--pm-accent); stroke-width: 2; }}
       .pm-model-icon .pm-state-shell {{ fill:var(--st-secondary-background-color); stroke:var(--pm-accent); stroke-width:2.2; }}
@@ -321,27 +378,39 @@ def model_icon_html(model_type: str) -> str:
       .pm-model-icon .pm-state-bubble {{ fill:color-mix(in srgb, white 62%, var(--pm-accent)); opacity:.7; }}
       .pm-model-icon .pm-mix-node {{ fill:var(--pm-accent); opacity:.72; }}
       .pm-model-icon .pm-drain-drop {{ fill:var(--pm-accent); opacity:.25; transform-box:fill-box; transform-origin:center; }}
-      .pm-model-icon .pm-flow {{ fill:none; stroke:var(--pm-accent); stroke-width:3.2; stroke-linecap:round; stroke-dasharray:8 92; opacity:0; }}
-      .pm-model-icon:hover .pm-state-liquid {{ animation:pm-liquid-wave 4.8s ease-in-out infinite; }}
-      .pm-model-icon:hover .pm-state-bubble-a {{ animation:pm-bubble-rise 4.8s .2s ease-in infinite; }}
-      .pm-model-icon:hover .pm-state-bubble-b {{ animation:pm-bubble-rise 4.8s 1s ease-in infinite; }}
-      .pm-model-icon:hover .pm-gru-hidden-in {{ animation: pm-gru-flow 4.8s .15s linear infinite; }}
-      .pm-model-icon:hover .pm-gru-reset {{ animation: pm-gate-pulse 4.8s .65s ease-in-out infinite; }}
-      .pm-model-icon:hover .pm-gru-drain {{ animation: pm-gru-flow 4.8s .95s linear infinite; }}
-      .pm-model-icon:hover .pm-drain-drop {{ animation: pm-drop-release 4.8s 1.2s ease-in-out infinite; }}
-      .pm-model-icon:hover .pm-gru-retained {{ animation: pm-gru-flow 4.8s 1.15s linear infinite; }}
-      .pm-model-icon:hover .pm-gru-input {{ animation: pm-gru-flow 4.8s 1.2s linear infinite; }}
-      .pm-model-icon:hover .pm-gru-output {{ animation: pm-gru-flow 4.8s 1.55s linear infinite; }}
-      .pm-model-icon:hover .pm-gru-to-update {{ animation: pm-gru-flow 4.8s 1.75s linear infinite; }}
-      .pm-model-icon:hover .pm-gru-update {{ animation: pm-gate-pulse 4.8s 2.05s ease-in-out infinite; }}
-      .pm-model-icon:hover .pm-gru-state-return {{ animation: pm-gru-flow 4.8s 2.3s linear infinite; }}
-      @keyframes pm-liquid-wave {{ 0%,100% {{ transform:translate(-2px, 3px) }} 36% {{ transform:translate(4px, -4px) }} 68% {{ transform:translate(-5px, 1px) }} }}
-      @keyframes pm-bubble-rise {{ 0%,24%,100% {{ transform:translateY(8px);opacity:0 }} 40% {{ opacity:.75 }} 68% {{ transform:translateY(-16px);opacity:0 }} }}
-      @keyframes pm-gru-flow {{ 0%,58%,100% {{ opacity:0;stroke-dashoffset:100 }} 10%,42% {{ opacity:1 }} 55% {{ opacity:0;stroke-dashoffset:0 }} }}
-      @keyframes pm-gate-pulse {{ 0%,18%,46%,100% {{ fill:var(--st-secondary-background-color);transform:scale(1) }} 28%,36% {{ fill:var(--pm-accent);transform:scale(1.12) }} }}
-      @keyframes pm-drop-release {{ 0%,22%,100% {{ opacity:.2;transform:translateY(5px) scale(.55) }} 35% {{ opacity:.9;transform:translateY(0) scale(1) }} 55% {{ opacity:0;transform:translateY(-8px) scale(.7) }} }}
+      .pm-model-icon .pm-flow {{ fill:none; stroke:var(--pm-accent); stroke-width:3.2; stroke-linecap:round; stroke-dasharray:.09 .91; opacity:0; }}
+      .pm-model-icon:hover .pm-state-liquid {{ animation:pm-liquid-level 8s ease-in-out infinite; }}
+      .pm-model-icon:hover .pm-state-bubble-a {{ animation:pm-bubble-a 8s ease-in infinite; }}
+      .pm-model-icon:hover .pm-state-bubble-b {{ animation:pm-bubble-b 8s ease-in infinite; }}
+      .pm-model-icon:hover .pm-gru-hidden-in {{ animation:pm-gru-hidden-in 8s linear infinite; }}
+      .pm-model-icon:hover .pm-gru-reset {{ animation:pm-reset-pulse 8s ease-in-out infinite; }}
+      .pm-model-icon:hover .pm-gru-drain {{ animation:pm-gru-drain 8s linear infinite; }}
+      .pm-model-icon:hover .pm-drain-drop {{ animation:pm-drop-release 8s ease-in-out infinite; }}
+      .pm-model-icon:hover .pm-gru-retained {{ animation:pm-gru-retained 8s linear infinite; }}
+      .pm-model-icon:hover .pm-gru-input {{ animation:pm-gru-input 8s linear infinite; }}
+      .pm-model-icon:hover .pm-gru-to-update {{ animation:pm-gru-to-update 8s linear infinite; }}
+      .pm-model-icon:hover .pm-gru-update {{ animation:pm-update-pulse 8s ease-in-out infinite; }}
+      .pm-model-icon:hover .pm-gru-state-return {{ animation:pm-gru-state-return 8s linear infinite; }}
+      .pm-model-icon:hover .pm-gru-output {{ animation:pm-gru-output 8s linear infinite; }}
+      @keyframes pm-liquid-level {{
+        0%,2%,100% {{ transform:translate(-2px,-4px) }} 12%,52% {{ transform:translate(2px,5px) }}
+        60%,96% {{ transform:translate(-2px,-4px) }}
+      }}
+      @keyframes pm-bubble-a {{ 0%,48%,72%,100% {{ transform:translateY(8px);opacity:0 }} 55% {{ opacity:.75 }} 68% {{ transform:translateY(-16px);opacity:0 }} }}
+      @keyframes pm-bubble-b {{ 0%,52%,76%,100% {{ transform:translateY(8px);opacity:0 }} 60% {{ opacity:.7 }} 72% {{ transform:translateY(-16px);opacity:0 }} }}
+      @keyframes pm-gru-hidden-in {{ 0%,2% {{ opacity:0;stroke-dashoffset:1 }} 3%,9% {{ opacity:1 }} 10%,100% {{ opacity:0;stroke-dashoffset:0 }} }}
+      @keyframes pm-reset-pulse {{ 0%,10%,16%,100% {{ fill:var(--st-secondary-background-color);transform:scale(1) }} 12%,14% {{ fill:var(--pm-accent);transform:scale(1.12) }} }}
+      @keyframes pm-gru-drain {{ 0%,16% {{ opacity:0;stroke-dashoffset:1 }} 17%,21% {{ opacity:1 }} 22%,100% {{ opacity:0;stroke-dashoffset:0 }} }}
+      @keyframes pm-drop-release {{ 0%,16%,23%,100% {{ opacity:.2;transform:translateY(5px) scale(.55) }} 19% {{ opacity:.9;transform:translateY(0) scale(1) }} 22% {{ opacity:0;transform:translateY(-8px) scale(.7) }} }}
+      @keyframes pm-gru-retained {{ 0%,22% {{ opacity:0;stroke-dashoffset:1 }} 23%,29% {{ opacity:1 }} 30%,100% {{ opacity:0;stroke-dashoffset:0 }} }}
+      @keyframes pm-gru-input {{ 0%,30% {{ opacity:0;stroke-dashoffset:1 }} 31%,37% {{ opacity:1 }} 38%,100% {{ opacity:0;stroke-dashoffset:0 }} }}
+      @keyframes pm-gru-to-update {{ 0%,38% {{ opacity:0;stroke-dashoffset:1 }} 39%,45% {{ opacity:1 }} 46%,100% {{ opacity:0;stroke-dashoffset:0 }} }}
+      @keyframes pm-update-pulse {{ 0%,46%,52%,100% {{ fill:var(--st-secondary-background-color);transform:scale(1) }} 48%,50% {{ fill:var(--pm-accent);transform:scale(1.12) }} }}
+      @keyframes pm-gru-state-return {{ 0%,52% {{ opacity:0;stroke-dashoffset:1 }} 53%,59% {{ opacity:1 }} 60%,100% {{ opacity:0;stroke-dashoffset:0 }} }}
+      @keyframes pm-gru-output {{ 0%,60% {{ opacity:0;stroke-dashoffset:1 }} 61%,69% {{ opacity:1 }} 70%,100% {{ opacity:0;stroke-dashoffset:0 }} }}
 
-      .pm-model-icon .pm-attention-fan {{ stroke:var(--pm-accent); stroke-width:1.7; opacity:0; }}
+      .pm-model-icon .pm-attention-fan {{ opacity:0; }}
+      .pm-model-icon .pm-attention-edge {{ stroke:var(--pm-accent); stroke-opacity:var(--pm-edge-opacity); stroke-width:var(--pm-edge-width); }}
       .pm-model-icon .pm-fan-2 {{ opacity:.5; }}
       .pm-model-icon .pm-kv {{ stroke-dasharray:4 5; }}
       .pm-model-icon .pm-k,

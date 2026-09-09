@@ -17,23 +17,16 @@ import torch
 
 from .experiment import (
     AutoregressiveBigramConfig,
-    AutoregressiveGRUConfig,
-    AutoregressiveMLPConfig,
     AutoregressiveModelConfig,
-    AutoregressiveTCNConfig,
-    AutoregressiveTransformerConfig,
     model_config_from_dict,
 )
 from .models import (
     AutoregressiveBigram,
-    AutoregressiveGRU,
-    AutoregressiveMLP,
     AutoregressivePasswordModel,
     AutoregressiveState,
-    AutoregressiveTCN,
-    AutoregressiveTransformer,
     PasswordModel,
 )
+from .model_factory import build_model_from_config
 from .monitoring import ProgressCallback
 from .tokenizer import CharTokenizer
 
@@ -69,45 +62,6 @@ def _parse_model_config(config: Mapping, tokenizer: CharTokenizer) -> InferenceM
     return parsed
 
 
-def _build_model(config: InferenceModelConfigType, tokenizer: CharTokenizer) -> AutoregressivePasswordModel:
-    """按配置构造具体模型，不在调用层判断模型类型。"""
-
-    if isinstance(config, AutoregressiveBigramConfig):
-        return AutoregressiveBigram(tokenizer, alpha=config.alpha)
-    if isinstance(config, AutoregressiveMLPConfig):
-        return AutoregressiveMLP(
-            tokenizer,
-            tau=config.tau,
-            embedding_dim=config.embedding_dim,
-            hidden_size=config.hidden_size,
-        )
-    if isinstance(config, AutoregressiveGRUConfig):
-        return AutoregressiveGRU(
-            tokenizer,
-            embedding_dim=config.embedding_dim,
-            hidden_size=config.hidden_size,
-            num_layers=config.num_layers,
-        )
-    if isinstance(config, AutoregressiveTCNConfig):
-        return AutoregressiveTCN(
-            tokenizer,
-            embedding_dim=config.embedding_dim,
-            channels=config.channels,
-            kernel_size=config.kernel_size,
-            dilations=config.dilations,
-        )
-    if isinstance(config, AutoregressiveTransformerConfig):
-        return AutoregressiveTransformer(
-            tokenizer,
-            d_model=config.d_model,
-            nhead=config.nhead,
-            num_layers=config.num_layers,
-            dim_feedforward=config.dim_feedforward,
-            max_length=config.max_length,
-        )
-    raise TypeError(f"不支持的模型配置类型: {type(config).__name__}")
-
-
 def load_inference_model(
     model_path: str | Path,
     tokenizer_path: str | Path,
@@ -131,7 +85,7 @@ def load_inference_model(
             raise ValueError("Bigram artifact 与 inference.json 的 alpha 不一致")
         return model, tokenizer
 
-    model = _build_model(config, tokenizer)
+    model = build_model_from_config(config, tokenizer)
     state_dict = torch.load(model_path, map_location=target_device, weights_only=True)
     model.load_state_dict(state_dict)
     model.to(target_device)
@@ -211,7 +165,7 @@ def score_passwords(
         total_batches = math.ceil(len(values) / batch_size) if values else 0
         for batch_index, start in enumerate(range(0, len(values), batch_size), start=1):
             batch_scores = model.surprisal_bits_batch(values[start : start + batch_size])
-            cpu_scores = [float(score) for score in batch_scores.detach().cpu()]
+            cpu_scores = batch_scores.detach().cpu().tolist()
             results.extend(cpu_scores)
             score_sum += sum(cpu_scores)
             if verbose:
@@ -352,8 +306,9 @@ def _masked_log_probs_batch(
         raise ValueError("next logits 必须是 [B,V] 张量")
     values = scores.detach().clone() / temperature
     values[:, [tokenizer.pad_id, tokenizer.bos_id, tokenizer.unk_id]] = -torch.inf
-    if not torch.isfinite(values).any(dim=1).all():
-        raise ValueError("模型没有可生成的合法 token")
+    finite = torch.isfinite(values)
+    if not ((finite | (values == -torch.inf)).all() & finite.any(dim=1).all()):
+        raise ValueError("模型 logits 包含 NaN、正无穷或没有合法 token")
     return torch.log_softmax(values, dim=-1)
 
 
@@ -564,6 +519,8 @@ def beam_search(
     device = _prepare_inference(model, tokenizer, None)
     with torch.inference_mode():
         prefix_ids = tokenizer.encode(prefix)
+        if tokenizer.unk_id in prefix_ids:
+            raise ValueError("prefix 包含模型词表之外的字符")
         if len(prefix_ids) > max_length:
             raise ValueError("prefix 长度不能超过 max_length")
         initial = _initial_state(model, tokenizer, prefix_ids, device, temperature)
@@ -650,7 +607,8 @@ def best_first_search(
 
     节点优先级公式为 `priority(s) = log_probability(s) /
     max(1, len(s)) ** length_penalty`。`length_penalty=0` 时使用累计 log
-    probability；正值只改变未完成节点出堆顺序，返回值仍按原始累计分数排序。
+    probability；正值改变所有入堆节点（含完成节点）的出堆顺序，返回值仍按
+    原始累计分数排序。长度归一化不是完整密码概率的可采纳上界，不保证全局最优。
     `node_top_k` 限制单节点分支数；`depth_beam_width` 限制同一深度实际扩展的
     未完成节点数，超出后直接丢弃。
 

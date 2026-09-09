@@ -86,22 +86,42 @@ def test_gru_icon_uses_one_cell_and_transformer_traverses_five_queries():
     assert 'class="pm-state-liquid"' in gru
     assert 'class="pm-flow pm-gru-drain"' in gru
     assert 'class="pm-flow pm-gru-state-return"' in gru
+    assert gru.count('pathLength="1" class="pm-flow') == 7
+    assert "stroke-dasharray:.09 .91" in gru
+    assert "animation:pm-liquid-level 8s" in gru
+    assert "animation:pm-gru-flow" not in gru
     assert "hₜ₋₁" not in gru
     assert ">hₜ<" not in gru
     assert transformer.count('<circle class="pm-node pm-q ') == 5
     assert transformer.count('<circle class="pm-node pm-k pm-weight-') == 5
     assert transformer.count('<circle class="pm-node pm-v pm-weight-') == 5
     assert transformer.count('<g class="pm-attention-fan pm-fan-') == 5
+    assert transformer.count('class="pm-attention-edge"') == 25
+    assert transformer.count("--pm-edge-opacity:") == 25
+    assert transformer.count("--pm-edge-width:") == 25
+
+
+def test_bigram_icon_fluctuates_irregularly_without_a_travelling_wave():
+    html = model_icon_html("bigram")
+
+    assert html.count('<rect class="pm-bar pm-bar-') == 12
+    assert html.count("--pm-h5:") == 12
+    assert "pm-bigram-fluctuate" in html
+    assert "pm-bigram-wave" not in html
+    assert "animation-delay" not in html
 
 
 def test_mlp_icon_keeps_static_wires_under_seamless_flow_animation():
     html = model_icon_html("mlp")
 
     assert "pm-token-text" not in html
-    assert html.count('<rect class="pm-token"') == 8
+    assert html.count('<rect class="pm-token"') == 12
     assert '<g clip-path="url(#pm-mlp-window)">' in html
     assert '<g class="pm-mlp-tokens">' in html
-    assert "to { transform:translateX(260px) }" in html
+    assert "transform:translateX(-260px)" in html
+    assert "0%,17% { transform:translateX(0) }" in html
+    assert "25%,42% { transform:translateX(-65px) }" in html
+    assert "animation: pm-flow-a 1.6s" in html
     assert 'class="pm-wire"' in html
     assert 'class="pm-mlp-flow pm-mlp-flow-a"' in html
     assert 'class="pm-mlp-flow pm-mlp-flow-b"' in html
@@ -112,6 +132,19 @@ def test_tcn_icon_uses_compact_unlabelled_kernel():
 
     assert "causal k = 3" not in html
     assert 'class="pm-kernel-box" x="24" y="39" width="116" height="32"' in html
+    assert html.count('class="pm-kernel-tap pm-tcn-weight-') == 3
+    assert html.count('class="pm-active-wire pm-tcn-weight-') == 3
+    assert html.count('class="pm-tcn-highlight pm-tcn-weight-') == 3
+    assert "--pm-tcn-wire-width:" in html
+    assert "--pm-tcn-projection-opacity:" in html
+    assert '<g class="pm-tcn-output">' in html
+    assert 'class="pm-tcn-output-arrow" marker-end="url(#pm-tcn-arrow)"' in html
+    # 输出中心 x=170，与卷积窗口右侧的下一个输入方块中心完全对齐。
+    assert 'class="pm-tcn-output-box" x="162" y="47" width="16" height="16"' in html
+    assert 'class="pm-token pm-tcn-token-3" x="157" y="122" width="26"' in html
+    assert "transform:translateX(176px)" not in html
+    assert "opacity:0;transform:scaleX" not in html
+    assert "pm-tcn-output-pulse" in html
 
 
 def test_model_family_icon_rejects_unknown_type():
@@ -535,12 +568,17 @@ def test_new_library_comparison_charts_have_expected_semantics():
     ).to_dict()
 
     assert time_spec["title"] == "Validation Loss by Cumulative Training Time"
+    assert time_spec["height"] == 500
     assert time_spec["encoding"]["x"]["scale"]["domainMin"] == 0
     assert time_spec["encoding"]["y"]["scale"] == {"zero": False}
     assert gap_spec["title"] == "Generalization Gap by Epoch"
+    assert gap_spec["height"] == 420
     assert gap_spec["layer"][0]["encoding"]["y"]["field"] == "Generalization Gap"
     assert gap_spec["layer"][1]["mark"]["type"] == "rule"
-    assert zoo_spec["title"] == "Model Zoo"
+    assert "title" not in zoo_spec
+    assert zoo_spec["height"] == 520
+    assert zoo_spec["config"]["legend"]["orient"] == "right"
+    assert zoo_spec["autosize"] == {"type": "fit-x", "contains": "padding"}
     assert zoo_spec["layer"][0]["encoding"]["x"]["field"] == "Estimated FLOPs"
     assert zoo_spec["layer"][0]["encoding"]["size"]["scale"]["type"] == "symlog"
     assert zoo_spec["layer"][0]["encoding"]["size"]["scale"]["range"] == [120, 3200]
@@ -589,6 +627,7 @@ def test_chart_positive_axes_start_at_zero_and_coverage_uses_percentages():
     colors = {"GRU": "#000000"}
 
     training_spec = plot_training_history({"GRU": history}, colors).to_dict()
+    learning_rate_spec = plot_learning_rate({"GRU": history}, colors).to_dict()
     histogram_spec = plot_surprisal_histogram({"GRU": surprisal}, colors).to_dict()
     coverage_spec = plot_coverage({"GRU": coverage}, colors).to_dict()
     efficiency_spec = plot_coverage(
@@ -597,6 +636,9 @@ def test_chart_positive_axes_start_at_zero_and_coverage_uses_percentages():
 
     assert training_spec["encoding"]["x"]["scale"]["domainMin"] == 0
     assert training_spec["encoding"]["y"]["scale"] == {"zero": False}
+    assert training_spec["height"] == 500
+    # 学习率图刻意保持紧凑；其余训练图才增加高度。
+    assert learning_rate_spec["height"] == 320
     for spec in (histogram_spec, coverage_spec, efficiency_spec):
         assert spec["encoding"]["x"]["scale"]["domainMin"] == 0
         assert spec["encoding"]["y"]["scale"]["domainMin"] == 0
@@ -652,6 +694,7 @@ def test_surprisal_boxplot_uses_tukey_whiskers_without_scaling_to_extremes():
     assert rows[0]["Outliers"] == 1
     assert spec["layer"][0]["encoding"]["y"]["field"] == "Lower Whisker"
     assert spec["layer"][0]["encoding"]["y2"]["field"] == "Upper Whisker"
+    assert spec["height"] == 440
 
 
 def test_playground_services_with_bigram_artifact():
@@ -736,6 +779,11 @@ def test_character_lab_visualizations_and_temperature_entropy():
     assert distribution_entropy(cold) < distribution_entropy(hot)
     assert journey["vconcat"][0]["title"] == "Character Surprisal Journey"
     assert journey["vconcat"][2]["title"] == "Surprisal per Token"
+    assert journey["vconcat"][0]["vconcat"][0]["height"] == 250
+    assert journey["vconcat"][1]["height"] == 440
+    assert journey["vconcat"][2]["height"] == 440
+    assert journey["vconcat"][1]["encoding"]["y"]["scale"] == {"zero": False}
+    assert journey["vconcat"][2]["encoding"]["y"]["scale"] == {"zero": False}
     assert keyboard["title"] == "Probability Keyboard · Bigram"
     assert laboratory["vconcat"][0]["title"] == "Temperature Response of Top Tokens"
 

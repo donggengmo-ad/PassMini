@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
+from math import isfinite
 from pathlib import Path
 from typing import Literal
 
@@ -30,8 +31,8 @@ class AutoregressiveBigramConfig:
     alpha: float = 1.0
 
     def __post_init__(self) -> None:
-        if self.alpha <= 0:
-            raise ValueError("alpha 必须大于 0")
+        if not isfinite(self.alpha) or self.alpha <= 0:
+            raise ValueError("alpha 必须是有限正数")
 
 
 @dataclass
@@ -159,6 +160,9 @@ class SchedulerConfig:
         allowed = {"none", "reduce_on_plateau", "step_lr", "cosine"}
         if self.name not in allowed:
             raise ValueError(f"不支持的 scheduler: {self.name!r}")
+        if not all(isfinite(value) for value in
+                   (self.factor, self.min_lr, self.gamma, self.eta_min)):
+            raise ValueError("scheduler 的数值参数必须有限")
         if self.factor <= 0 or self.factor >= 1:
             raise ValueError("factor 必须在 (0, 1) 范围内")
         if self.patience < 0:
@@ -189,10 +193,10 @@ class TrainingConfig:
     def __post_init__(self) -> None:
         if self.batch_size <= 0 or self.num_epochs <= 0:
             raise ValueError("batch_size 和 num_epochs 必须大于 0")
-        if self.learning_rate <= 0:
-            raise ValueError("learning_rate 必须大于 0")
-        if self.max_norm <= 0:
-            raise ValueError("max_norm 必须大于 0")
+        if not isfinite(self.learning_rate) or self.learning_rate <= 0:
+            raise ValueError("learning_rate 必须是有限正数")
+        if not isfinite(self.max_norm) or self.max_norm <= 0:
+            raise ValueError("max_norm 必须是有限正数")
 
 
 @dataclass

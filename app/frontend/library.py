@@ -187,6 +187,8 @@ def load_coverage_data(path: str | Path) -> CoverageData:
         raise ValueError("attempts 必须是严格递增的正整数")
     if np.any((coverage < 0) | (coverage > 1)):
         raise ValueError("coverage 必须位于 [0, 1]")
+    if np.any(np.diff(coverage) < 0):
+        raise ValueError("累计 coverage 不能下降")
     return CoverageData(test_size, attempts, coverage)
 
 
@@ -265,10 +267,12 @@ def load_evaluation_summary(path: str | Path) -> EvaluationSummary:
 
 
 def coverage_at_budget(data: CoverageData, budget: int) -> float | None:
-    """返回不超过给定预算的最后一个实测覆盖率检查点，不进行插值。"""
+    """返回预算内最后一个实测检查点；预算超出实测范围时返回 None，不外推。"""
 
     if budget <= 0:
         raise ValueError("budget 必须大于 0")
+    if budget > data.attempts[-1]:
+        return None
     index = int(np.searchsorted(data.attempts, budget, side="right") - 1)
     return None if index < 0 else float(data.coverage[index])
 
@@ -438,7 +442,7 @@ def plot_training_history(
             ),
             tooltip=["Model:N", "Split:N", "Epoch:Q", alt.Tooltip("Loss:Q", format=".4f")],
         )
-        .properties(title="Training History", height=420)
+        .properties(title="Training History", height=500)
     )
 
 
@@ -488,7 +492,7 @@ def plot_validation_loss_by_time(
                 alt.Tooltip("Validation Loss:Q", format=".4f"),
             ],
         )
-        .properties(title="Validation Loss by Cumulative Training Time", height=420)
+        .properties(title="Validation Loss by Cumulative Training Time", height=500)
     )
 
 
@@ -540,7 +544,7 @@ def plot_generalization_gap(
         .mark_rule(color="#8a96a3", strokeDash=[5, 4])
         .encode(y="Generalization Gap:Q")
     )
-    return (line + zero_line).properties(title="Generalization Gap by Epoch", height=340)
+    return (line + zero_line).properties(title="Generalization Gap by Epoch", height=420)
 
 
 def plot_learning_rate(
@@ -584,11 +588,14 @@ def plot_model_zoo(
     overviews: list[ResearchOverview],
     colors: Mapping[str, str],
     metric: str = "Mean Bits / Token",
+    label_mode: str = "Focus",
 ) -> alt.LayerChart:
     """按 Estimated FLOPs 排列模型，并用圆点面积的对称对数尺度编码参数量。"""
 
     if not overviews:
         raise ValueError("没有可绘制的研究总览")
+    if label_mode not in {"Focus", "All", "None"}:
+        raise ValueError("label_mode 必须是 Focus、All 或 None")
     metrics = {
         "Mean Bits / Token": ("mean_bits_per_token", "Mean Bits per Token", False),
         "Random Coverage": ("random_coverage", "Random Coverage (%)", True),
@@ -647,6 +654,9 @@ def plot_model_zoo(
         ),
         y=y_axis,
     )
+    # 悬停或点击图例只突出一个模型；默认不把全部标签挤在密集圆点之间。
+    hover = alt.selection_point(fields=["Model"], on="pointerover", clear="pointerout", empty=False)
+    focus = alt.selection_point(fields=["Model"], bind="legend", empty=False)
     points = base.mark_circle(opacity=1.0).encode(
         color=alt.Color("Model:N", scale=_color_scale(labels, colors)),
         size=alt.Size(
@@ -667,7 +677,9 @@ def plot_model_zoo(
                 "Value:Q", title=metric, format=".2%" if percentage else ".4f"
             ),
         ],
-    )
+        strokeWidth=alt.condition(hover | focus, alt.value(2.5), alt.value(0)),
+        stroke=alt.value("#888888"),
+    ).add_params(hover, focus)
     # dy 直接读取每条记录的圆点半径，让 Bigram 靠近小圆、较大模型避开大圆。
     labels_layer = base.mark_text(
         dy=alt.ExprRef(expr="-datum['Label Offset']"),
@@ -676,9 +688,17 @@ def plot_model_zoo(
         fontWeight="bold",
     ).encode(
         text="Model:N",
-        color=alt.Color("Model:N", scale=_color_scale(labels, colors), legend=None),
+        color=alt.Color("Model:N", scale=_color_scale(labels, colors)),
     )
-    return (points + labels_layer).properties(title="Model Zoo", height=430)
+    if label_mode == "Focus":
+        labels_layer = labels_layer.transform_filter(hover | focus)
+    elif label_mode == "None":
+        labels_layer = labels_layer.transform_filter("false")
+    # 模型图例放在右侧，不与绘图区共享纵向空间；页面标题由 Streamlit 单独渲染。
+    return (points + labels_layer).properties(
+        height=520,
+        autosize=alt.AutoSizeParams(type="fit-x", contains="padding"),
+    ).configure_legend(orient="right")
 
 
 def pairwise_win_rates(
@@ -931,7 +951,7 @@ def plot_surprisal_boxplot(
         (whisker + box + median)
         .properties(
             title="Bits per Token Comparison" if normalized else "Surprisal Comparison",
-            height=340,
+            height=440,
         )
         .resolve_scale(color="shared")
     )

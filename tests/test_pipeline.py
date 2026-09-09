@@ -36,6 +36,8 @@ def test_pipeline_trains_and_saves_canonical_artifacts(tmp_path):
     artifacts = run_training_experiment(config)
     assert artifacts.model.model_type == "gru"
     assert artifacts.test_loss is not None
+    history = json.loads((config.data.output_dir / "history.json").read_text())
+    assert history["test_loss"] == artifacts.test_loss
     assert (config.data.output_dir / "checkpoint_latest.pt").is_file()
     assert (config.data.output_dir / "model.pt").is_file()
     assert (config.data.output_dir / "inference.json").is_file()

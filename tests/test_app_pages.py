@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import sys
 
 import pytest
@@ -108,6 +109,54 @@ def test_library_random_coverage_page_reads_packaged_npz_files():
     assert len(app.get("vega_lite_chart")) == 2
 
 
+@pytest.mark.parametrize(
+    ("view", "expected_charts"),
+    [
+        ("Training", 4),
+        ("Surprisal", 2),
+        ("Pairwise Comparison", 2),
+        ("Coverage", 2),
+        ("Generation Quality", 1),
+    ],
+)
+def test_library_views_render_without_invalid_generic_legend_binding(view, expected_charts):
+    app = create_app_test()
+    app.session_state["selected_model_ids"] = ["low-gru", "low-tcn"]
+    app = app.switch_page("app_pages/library.py").run()
+    app.get("button_group")[0].set_value(view)
+    app = app.run()
+
+    charts = app.get("vega_lite_chart")
+    assert not app.exception
+    assert len(charts) == expected_charts
+    for chart in charts:
+        spec = json.loads(chart.proto.spec)
+        assert not any(
+            parameter.get("bind") == "legend"
+            and parameter.get("select", {}).get("fields") == ["Model"]
+            for parameter in spec.get("params", [])
+        )
+
+
+def test_library_surprisal_displays_every_selected_model_metric():
+    app = create_app_test().switch_page("app_pages/library.py").run()
+    app.get("button_group")[0].set_value("Surprisal")
+    app.run()
+    assert not app.exception
+    assert len(app.metric) == len(app.session_state["selected_model_ids"])
+
+
+def test_model_zoo_handles_missing_coverage_without_page_exception(monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise ValueError("missing coverage")
+    monkeypatch.setattr("app.frontend.library.load_coverage_data", unavailable)
+    app = create_app_test().switch_page("app_pages/library.py").run()
+    app.get("button_group")[1].set_value("Random Coverage")
+    app.run()
+    assert not app.exception
+    assert any("Random Coverage" in item.value for item in app.info)
+
+
 def test_character_probability_keyboard_page_smoke():
     # CCv2 注册表属于单次 AppTest 上下文；强制在本次上下文重新导入组件。
     sys.modules.pop("app.frontend.probability_input", None)
@@ -123,3 +172,97 @@ def test_character_probability_keyboard_page_smoke():
     assert len(app.dataframe) == 1
     assert len(app.get("vega_lite_chart")) == 1
     assert not app.exception
+
+
+@pytest.mark.parametrize("mode", ["Surprisal Journey", "Temperature Laboratory", "Model Disagreement"])
+def test_character_subpages_render_nonempty_input(mode, monkeypatch):
+    import app.frontend.probability_input as inputs
+    monkeypatch.setattr(inputs, "character_input", lambda *args, **kwargs: "abc123")
+    app = create_app_test()
+    app.session_state["selected_model_ids"] = ["low-gru", "low-tcn"]
+    # 旧版本会把这份子选择当作实时模型集合；现在应忽略它并使用全部装备模型。
+    app.session_state["character_models"] = ["low-gru"]
+    app = app.switch_page("app_pages/playground.py").run()
+    app.get("button_group")[0].set_value("Character Lab")
+    app.run()
+    app.get("button_group")[1].set_value(mode)
+    app.run()
+    assert not app.exception
+    assert len(app.get("vega_lite_chart")) >= 1
+    assert all(widget.label != "Character models" for widget in app.multiselect)
+    if mode == "Surprisal Journey":
+        # 拆成独立图时，子图必须携带原先继承的数据，否则浏览器只会画空坐标轴。
+        import json
+        import pyarrow as pa
+        charts = app.get("vega_lite_chart")
+        assert len(charts) == 4
+        for chart in charts:
+            spec = json.loads(chart.proto.spec)
+            dataset = next(d for d in chart.proto.datasets if d.name == spec["data"]["name"])
+            frame = pa.ipc.open_stream(dataset.data.data).read_all().to_pandas()
+            assert len(frame) == 12
+            assert set(frame["Model"]) == {"GRU · Low", "TCN · Low"}
+
+
+def test_scoring_form_produces_results():
+    app = create_app_test()
+    app.session_state["selected_model_ids"] = ["low-gru", "baseline-bigram"]
+    app = app.switch_page("app_pages/playground.py").run()
+    app.text_input[0].set_value("abc123")
+    app.button[0].click()
+    app.run()
+    assert not app.exception
+    assert len(app.metric) == 3
+    assert len(app.get("vega_lite_chart")) == 1
+
+
+def test_scoring_result_survives_navigation_without_rescoring(monkeypatch):
+    from unittest.mock import Mock
+    import app.frontend.playground as playground
+    spy = Mock(wraps=playground.score_models)
+    monkeypatch.setattr(playground, "score_models", spy)
+    app = create_app_test()
+    app.session_state["selected_model_ids"] = ["low-gru"]
+    app = app.switch_page("app_pages/playground.py").run()
+    app.text_input[0].set_value("abc123")
+    app.button[0].click().run()
+    assert spy.call_count == 1
+    values = [metric.value for metric in app.metric]
+    app.switch_page("app_pages/library.py").run()
+    app.switch_page("app_pages/playground.py").run()
+    assert not app.exception
+    assert spy.call_count == 1
+    assert [metric.value for metric in app.metric] == values
+    app.button(key="clear_playground_results").click().run()
+    assert not app.exception
+    assert not app.metric
+    assert app.text_input[0].value == ""
+
+
+@pytest.mark.parametrize("mode", ["Random Sampling", "Beam Completion"])
+def test_generation_result_survives_subpage_switch(mode, monkeypatch):
+    from unittest.mock import Mock
+    import app.frontend.playground as playground
+    from scripts.inference import GenerationCandidate
+    function = "generate_with_models" if mode == "Random Sampling" else "complete_with_models"
+    payload = ["ab"] if mode == "Random Sampling" else [GenerationCandidate("ab", [4, 5], -1.0)]
+    spy = Mock(return_value={"low-gru": payload})
+    monkeypatch.setattr(playground, function, spy)
+    app = create_app_test()
+    app.session_state["selected_model_ids"] = ["low-gru"]
+    app.switch_page("app_pages/playground.py").run()
+    app.get("button_group")[0].set_value("Generation Lab").run()
+    app.get("button_group")[1].set_value(mode).run()
+    if mode == "Beam Completion":
+        app.text_input[0].set_value("a")
+    app.button[0].click().run()
+    assert not app.exception
+    assert spy.call_count == 1
+    app.get("button_group")[0].set_value("Score Arena").run()
+    app.get("button_group")[0].set_value("Generation Lab").run()
+    assert not app.exception
+    assert app.dataframe
+    assert spy.call_count == 1
+    app.button(key="clear_playground_results").click().run()
+    assert not app.exception
+    assert not app.dataframe

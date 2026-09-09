@@ -22,8 +22,12 @@ from app.frontend.playground import (
     plot_temperature_laboratory,
     score_models,
     trace_character_probabilities,
+    trace_temperature_probabilities,
 )
 from app.frontend.warehouse import get_runtime_model
+from app.frontend.playground_session import (
+    remember_result, recall_result, clear_playground_results,
+)
 
 
 catalog = load_catalog()
@@ -31,7 +35,7 @@ records = selected_records(catalog)
 st.title("Playground", anchor=False)
 render_current_selection(records)
 st.warning(
-    "输入不会被记录，但不建议输入正在使用的真实密码。",
+    "输入不会被记录，但会传至服务器计算，不建议输入正在使用的真实密码。",
     icon=":material/warning:",
 )
 if not records:
@@ -57,12 +61,23 @@ def show_chart(chart) -> None:
     st.altair_chart(chart, width="stretch")
 
 
-def render_scores(password: str, source: str) -> None:
-    """对指定演示密码执行多模型评分，并统一渲染指标、图表和明细。"""
+def capture_scores(password: str, source: str, slot: str) -> None:
+    """提交时才评分；切换页面只恢复数值，不重复运行模型。"""
 
     with st.spinner("正在加载模型并评分……"):
         scores = score_models(password, load_selected_models())
-        aggregate = aggregate_scores(scores)
+    remember_result(st.session_state, slot, list(labels), (password, source, scores))
+
+
+def render_saved_scores(slot: str) -> None:
+    """展示当前会话该实验最后一次成功提交的结果。"""
+
+    result = recall_result(st.session_state, slot, list(labels))
+    if result is None:
+        return
+    password, source, scores = result
+    aggregate = aggregate_scores(scores)
+    st.caption("上次完成的结果；修改输入后请重新提交。")
     st.code(password, language=None)
     st.caption(source)
     mean_a, mean_b, spread = st.columns(3)
@@ -115,6 +130,8 @@ if area == "Score Arena":
             password = st.text_input(
                 "Demo password",
                 type="password",
+                key="score_demo_password",
+                persist_state="session",
                 max_chars=12,
                 help="接受 1–12 个可打印 ASCII 字符。",
             )
@@ -125,9 +142,11 @@ if area == "Score Arena":
             )
         if submitted:
             try:
-                render_scores(password, "手动输入的演示文本")
+                capture_scores(password, "手动输入的演示文本", "manual")
             except (FileNotFoundError, TypeError, ValueError) as error:
                 st.error(str(error))
+
+        render_saved_scores("manual")
 
     elif score_mode == "Generator versus Judge":
         with st.form("generator-versus-judge"):
@@ -158,39 +177,85 @@ if area == "Score Arena":
                         temperature=temperature,
                         seed=int(seed),
                     )
-                render_scores(password, f"由 {labels[generator_id]} 生成")
+                capture_scores(password, f"由 {labels[generator_id]} 生成", "judge")
             except (FileNotFoundError, TypeError, ValueError) as error:
                 st.error(str(error))
 
+        render_saved_scores("judge")
+
 elif area == "Character Lab":
-    character_mode = st.segmented_control(
-        "Character Experiment",
-        [
-            "Surprisal Journey",
-            "Probability Keyboard",
-            "Temperature Laboratory",
-            "Model Disagreement",
-        ],
-        default="Surprisal Journey",
-        required=True,
-        key="playground_character_mode",
-        width="stretch",
-        persist_state="session",
-    )
-    typed_password = character_input(
-        "Demo password",
-        key="character_lab_input",
-        max_length=12,
-    )
-    st.caption(
-        "每个已输入字符保留模型在输入前为它分配的概率。红色表示低概率，绿色表示高概率。"
-    )
-    try:
-        if character_mode == "Surprisal Journey":
-            runtime = load_selected_models()
-            with st.spinner("正在追踪逐字符 Surprisal……"):
-                traces = trace_character_probabilities(typed_password, runtime, top_k=5)
-            for trace in traces:
+    # 逐键更新只重跑该实验区域；导航和结果清除控件不重复执行。
+    @st.fragment
+    def render_character_lab():
+        character_mode = st.segmented_control(
+            "Character Experiment",
+            [
+                "Surprisal Journey",
+                "Probability Keyboard",
+                "Temperature Laboratory",
+                "Model Disagreement",
+            ],
+            default="Surprisal Journey",
+            required=True,
+            key="playground_character_mode",
+            width="stretch",
+            persist_state="session",
+        )
+        typed_password = character_input(
+            "Demo password",
+            key="character_lab_input",
+            max_length=12,
+        )
+        st.caption(
+            "每个已输入字符保留模型在输入前为它分配的概率。红色表示低概率，绿色表示高概率。"
+        )
+        try:
+            if character_mode == "Surprisal Journey":
+                runtime = load_selected_models()
+                with st.spinner("正在追踪逐字符 Surprisal……"):
+                    traces = trace_character_probabilities(typed_password, runtime, top_k=5)
+                for trace in traces:
+                    with st.container(border=True):
+                        st.subheader(labels[trace.model_id], anchor=False)
+                        st.html(
+                            colored_password_html(
+                                [(item.character, item.probability) for item in trace.characters]
+                            )
+                        )
+                if typed_password:
+                    journey = plot_surprisal_journey(traces, labels, colors)
+                    # 每行最多三幅柱状图，超过上限换行；窄屏下 Streamlit 会自动纵向堆叠列。
+                    st.subheader("Character Surprisal Journey", anchor=False)
+                    model_charts = list(journey.vconcat[0].vconcat)
+                    for start in range(0, len(model_charts), 3):
+                        row = model_charts[start:start + 3]
+                        for column, model_chart in zip(st.columns(len(row)), row):
+                            with column:
+                                st.caption(model_chart.title)
+                                show_chart(model_chart.properties(data=journey.data))
+                    for summary_chart in journey.vconcat[1:]:
+                        show_chart(summary_chart.properties(data=journey.data).configure_legend(orient="bottom"))
+                    st.caption(
+                        "Step Surprisal 为 −log₂ p(character | prefix)；Cumulative Surprisal "
+                        "是沿输入前缀逐步累加的结果；Surprisal per Token 再除以当前前缀长度。"
+                        "此处分布屏蔽 PAD/BOS/UNK 后重新归一化；Score Arena 使用原始模型概率并计入 EOS，"
+                        "因此两者的总数不能直接相减作为 EOS 惊讶度。"
+                    )
+                else:
+                    st.info("输入字符后即可观察每一步和累计惊讶度。")
+
+            elif character_mode == "Probability Keyboard":
+                model_id = st.selectbox(
+                    "Model",
+                    [record.id for record in records],
+                    format_func=labels.__getitem__,
+                    key="probability_keyboard_model",
+                )
+                runtime = {model_id: load_one_model(model_id)}
+                with st.spinner("正在更新 Next-token 分布……"):
+                    trace = trace_character_probabilities(
+                        typed_password, runtime, top_k=8
+                    )[0]
                 with st.container(border=True):
                     st.subheader(labels[trace.model_id], anchor=False)
                     st.html(
@@ -198,126 +263,93 @@ elif area == "Character Lab":
                             [(item.character, item.probability) for item in trace.characters]
                         )
                     )
-            if typed_password:
-                show_chart(plot_surprisal_journey(traces, labels, colors))
-                st.caption(
-                    "Step Surprisal 为 −log₂ p(character | prefix)；Cumulative Surprisal "
-                    "是沿输入前缀逐步累加的结果；Surprisal per Token 再除以当前前缀长度。"
-                    "只有进行完整密码评分时才计入 EOS。"
-                )
-            else:
-                st.info("输入字符后即可观察每一步和累计惊讶度。")
-
-        elif character_mode == "Probability Keyboard":
-            model_id = st.selectbox(
-                "Model",
-                [record.id for record in records],
-                format_func=labels.__getitem__,
-                key="probability_keyboard_model",
-            )
-            runtime = {model_id: load_one_model(model_id)}
-            with st.spinner("正在更新 Next-token 分布……"):
-                trace = trace_character_probabilities(
-                    typed_password, runtime, top_k=8
-                )[0]
-            with st.container(border=True):
-                st.subheader(labels[trace.model_id], anchor=False)
-                st.html(
-                    colored_password_html(
-                        [(item.character, item.probability) for item in trace.characters]
+                    show_chart(plot_probability_keyboard(trace, labels[trace.model_id]))
+                    st.dataframe(
+                        [
+                            {"Token": item.token, "Probability": item.probability}
+                            for item in trace.next_tokens
+                        ],
+                        column_config={
+                            "Probability": st.column_config.NumberColumn(format="percent")
+                        },
+                        hide_index=True,
+                        width="stretch",
                     )
-                )
-                show_chart(plot_probability_keyboard(trace, labels[trace.model_id]))
-                st.dataframe(
-                    [
-                        {"Token": item.token, "Probability": item.probability}
-                        for item in trace.next_tokens
-                    ],
-                    column_config={
-                        "Probability": st.column_config.NumberColumn(format="percent")
-                    },
-                    hide_index=True,
-                    width="stretch",
-                )
-            st.caption(
-                "Probability Keyboard 的颜色按当前模型中概率最高的 token 归一化；"
-                "悬停可查看绝对概率。"
-            )
-
-        elif character_mode == "Temperature Laboratory":
-            model_id = st.selectbox(
-                "Model",
-                [record.id for record in records],
-                format_func=labels.__getitem__,
-                key="temperature_model",
-            )
-            runtime = {model_id: load_one_model(model_id)}
-            temperatures = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0)
-            with st.spinner("正在比较不同 Temperature……"):
-                traces = {
-                    temperature: trace_character_probabilities(
-                        typed_password,
-                        runtime,
-                        top_k=8,
-                        temperature=temperature,
-                    )[0]
-                    for temperature in temperatures
-                }
-            show_chart(plot_temperature_laboratory(traces))
-            st.caption(
-                "Temperature 在 softmax 前缩放 logits。较低取值使分布更集中；"
-                "较高取值使分布更平坦，通常也会提高 Entropy。"
-            )
-
-        elif character_mode == "Model Disagreement":
-            runtime = load_selected_models()
-            if len(runtime) < 2:
-                st.info("至少在 Warehouse 选择两个模型才能比较分歧。")
-            else:
-                with st.spinner("正在比较模型概率分布……"):
-                    traces = trace_character_probabilities(
-                        typed_password, runtime, top_k=8
-                    )
-                matrix = model_disagreement_matrix(traces)
-                upper = matrix.to_numpy()[np.triu_indices(len(matrix), k=1)]
-                entropies = np.asarray(
-                    [distribution_entropy(trace) for trace in traces], dtype=float
-                )
-                mean_card, maximum_card, entropy_card = st.columns(3)
-                mean_card.metric(
-                    "Mean Pairwise JSD",
-                    f"{float(np.mean(upper)):.4f} bits",
-                    help=(
-                        "所有不同模型对的 Jensen–Shannon divergence 算术平均。\n\n"
-                        "0 表示下一 token 分布完全一致；值越大表示整体分歧越强。"
-                    ),
-                    border=True,
-                )
-                maximum_card.metric(
-                    "Maximum Pairwise JSD",
-                    f"{float(np.max(upper)):.4f} bits",
-                    help=(
-                        "当前前缀下分歧最大的一对模型的 JSD。\n\n"
-                        "它用于发现平均值可能掩盖的局部架构冲突。"
-                    ),
-                    border=True,
-                )
-                entropy_card.metric(
-                    "Entropy Range",
-                    f"{float(np.ptp(entropies)):.4f} bits",
-                    help=(
-                        "所选模型下一 token Shannon entropy 的最大值减最小值。\n\n"
-                        "反映模型对下一步预测不确定程度的跨度。"
-                    ),
-                    border=True,
-                )
-                show_chart(plot_model_disagreement(traces, labels))
                 st.caption(
-                    "此处 Jensen–Shannon divergence 具有对称性，取值限制在 0–1 bit。"
-                    "数值越大，表示模型对 Next token 的分歧越强。"
+                    "Probability Keyboard 的颜色按当前模型中概率最高的 token 归一化；"
+                    "悬停可查看绝对概率。"
                 )
-    except (FileNotFoundError, TypeError, ValueError) as error:
-        st.error(str(error))
+
+            elif character_mode == "Temperature Laboratory":
+                model_id = st.selectbox(
+                    "Model",
+                    [record.id for record in records],
+                    format_func=labels.__getitem__,
+                    key="temperature_model",
+                )
+                runtime = {model_id: load_one_model(model_id)}
+                temperatures = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0)
+                with st.spinner("正在比较不同 Temperature……"):
+                    traces = trace_temperature_probabilities(
+                        typed_password, runtime, temperatures, top_k=8
+                    )
+                show_chart(plot_temperature_laboratory(traces))
+                st.caption(
+                    "Temperature 在 softmax 前缩放 logits。较低取值使分布更集中；"
+                    "较高取值使分布更平坦，通常也会提高 Entropy。"
+                )
+
+            elif character_mode == "Model Disagreement":
+                runtime = load_selected_models()
+                if len(runtime) < 2:
+                    st.info("至少在 Warehouse 选择两个模型才能比较分歧。")
+                else:
+                    with st.spinner("正在比较模型概率分布……"):
+                        traces = trace_character_probabilities(
+                            typed_password, runtime, top_k=8
+                        )
+                    matrix = model_disagreement_matrix(traces)
+                    upper = matrix.to_numpy()[np.triu_indices(len(matrix), k=1)]
+                    entropies = np.asarray(
+                        [distribution_entropy(trace) for trace in traces], dtype=float
+                    )
+                    mean_card, maximum_card, entropy_card = st.columns(3)
+                    mean_card.metric(
+                        "Mean Pairwise JSD",
+                        f"{float(np.mean(upper)):.4f} bits",
+                        help=(
+                            "所有不同模型对的 Jensen–Shannon divergence 算术平均。\n\n"
+                            "0 表示下一 token 分布完全一致；值越大表示整体分歧越强。"
+                        ),
+                        border=True,
+                    )
+                    maximum_card.metric(
+                        "Maximum Pairwise JSD",
+                        f"{float(np.max(upper)):.4f} bits",
+                        help=(
+                            "当前前缀下分歧最大的一对模型的 JSD。\n\n"
+                            "它用于发现平均值可能掩盖的局部架构冲突。"
+                        ),
+                        border=True,
+                    )
+                    entropy_card.metric(
+                        "Entropy Range",
+                        f"{float(np.ptp(entropies)):.4f} bits",
+                        help=(
+                            "所选模型下一 token Shannon entropy 的最大值减最小值。\n\n"
+                            "反映模型对下一步预测不确定程度的跨度。"
+                        ),
+                        border=True,
+                    )
+                    show_chart(plot_model_disagreement(traces, labels))
+                    st.caption(
+                        "此处 Jensen–Shannon divergence 具有对称性，取值限制在 0–1 bit。"
+                        "数值越大，表示模型对 Next token 的分歧越强。"
+                    )
+        except (FileNotFoundError, TypeError, ValueError) as error:
+            st.error(str(error))
+
+    render_character_lab()
 
 elif area == "Generation Lab":
     generation_mode = st.segmented_control(
@@ -349,23 +381,27 @@ elif area == "Generation Lab":
                         temperature=temperature,
                         seed=int(seed),
                     )
-                for model_id, passwords in generated.items():
-                    with st.container(border=True):
-                        st.subheader(labels[model_id], anchor=False)
-                        st.dataframe(
-                            [
-                                {"Password": password, "Length": len(password)}
-                                for password in passwords
-                            ],
-                            hide_index=True,
-                            width="stretch",
-                        )
+                remember_result(st.session_state, "random", list(labels), generated)
             except (FileNotFoundError, TypeError, ValueError) as error:
                 st.error(str(error))
+        generated = recall_result(st.session_state, "random", list(labels))
+        if generated is not None:
+            st.caption("上次完成的生成结果；参数变更后请重新提交。")
+            for model_id, passwords in generated.items():
+                with st.container(border=True):
+                    st.subheader(labels[model_id], anchor=False)
+                    st.dataframe(
+                        [
+                            {"Password": password, "Length": len(password)}
+                            for password in passwords
+                        ],
+                        hide_index=True,
+                        width="stretch",
+                    )
 
     elif generation_mode == "Beam Completion":
         with st.form("prefix-completion"):
-            prefix = st.text_input("Prefix", max_chars=12)
+            prefix = st.text_input("Prefix", max_chars=12, key="beam_demo_prefix", persist_state="session")
             beam_column, length_column, temperature_column = st.columns(3)
             beam_width = beam_column.slider("Beam width", 1, 20, 5)
             max_length = length_column.slider(
@@ -389,46 +425,57 @@ elif area == "Generation Lab":
                         max_length=max_length,
                         temperature=temperature,
                     )
-                show_chart(plot_completion_consensus(completions, labels))
-                st.dataframe(
-                    completion_consensus_summary(completions, labels),
-                    column_config={
-                        "Support Rate": st.column_config.NumberColumn(
-                            format="percent",
-                            help="返回该候选的模型数除以全部参与模型数。",
-                        ),
-                        "Consensus Score": st.column_config.NumberColumn(
-                            format="%.3f",
-                            help=(
-                                "各模型 reciprocal rank 的和除以模型数；未返回候选的模型贡献 0。"
-                            ),
-                        ),
-                        "Mean Log Probability": st.column_config.NumberColumn(
-                            format="%.4f",
-                            help="仅在返回该候选的模型之间平均；不同模型的绝对值需谨慎比较。",
-                        ),
-                    },
-                    hide_index=True,
-                    width="stretch",
-                )
-                for model_id, candidates in completions.items():
-                    with st.container(border=True):
-                        st.subheader(labels[model_id], anchor=False)
-                        st.dataframe(
-                            [
-                                {
-                                    "Candidate": candidate.text,
-                                    "Log Probability": candidate.log_probability,
-                                }
-                                for candidate in candidates
-                            ],
-                            hide_index=True,
-                            width="stretch",
-                        )
-                st.caption(
-                    "Consensus 在相同 Beam Search 设置下使用 reciprocal rank。候选会同时"
-                    "因更多模型支持和更高排名而获得分数；图表只显示前 25 个候选，表格"
-                    "保留全部结果。"
-                )
+                remember_result(st.session_state, "beam", list(labels), completions)
             except (FileNotFoundError, TypeError, ValueError) as error:
                 st.error(str(error))
+        completions = recall_result(st.session_state, "beam", list(labels))
+        if completions is not None:
+            st.caption("上次完成的补全结果；前缀或参数变更后请重新提交。")
+            show_chart(plot_completion_consensus(completions, labels))
+            st.dataframe(
+                completion_consensus_summary(completions, labels),
+                column_config={
+                    "Support Rate": st.column_config.NumberColumn(
+                        format="percent",
+                        help="返回该候选的模型数除以全部参与模型数。",
+                    ),
+                    "Consensus Score": st.column_config.NumberColumn(
+                        format="%.3f",
+                        help=(
+                            "各模型 reciprocal rank 的和除以模型数；未返回候选的模型贡献 0。"
+                        ),
+                    ),
+                    "Mean Log Probability": st.column_config.NumberColumn(
+                        format="%.4f",
+                        help="仅在返回该候选的模型之间平均；不同模型的绝对值需谨慎比较。",
+                    ),
+                },
+                hide_index=True,
+                width="stretch",
+            )
+            for model_id, candidates in completions.items():
+                with st.container(border=True):
+                    st.subheader(labels[model_id], anchor=False)
+                    st.dataframe(
+                        [
+                            {
+                                "Candidate": candidate.text,
+                                "Log Probability": candidate.log_probability,
+                            }
+                            for candidate in candidates
+                        ],
+                        hide_index=True,
+                        width="stretch",
+                    )
+            st.caption(
+                "Consensus 在相同 Beam Search 设置下使用 reciprocal rank。候选会同时"
+                "因更多模型支持和更高排名而获得分数；图表只显示前 25 个候选，表格"
+                "保留全部结果。"
+            )
+
+st.button(
+    "Clear session results", key="clear_playground_results",
+    icon=":material/delete_sweep:",
+    on_click=clear_playground_results, args=(st.session_state,),
+    help="清除当前会话的评分、生成、补全快照和演示输入，不影响模型或其他用户。",
+)

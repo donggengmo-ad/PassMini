@@ -206,8 +206,10 @@ class AutoregressivePasswordModel(nn.Module, PasswordModel):
         scores = scores.clone()
         invalid_ids = [self.pad_id, self.tokenizer.bos_id, self.tokenizer.unk_id]
         scores[:, invalid_ids] = -torch.inf
-        if not torch.isfinite(scores).any(dim=1).all():
-            raise ValueError("模型没有可生成的合法 token")
+        finite = torch.isfinite(scores)
+        # 合并为一次主机判断，避免为每种异常分别同步 GPU。
+        if not ((finite | (scores == -torch.inf)).all() & finite.any(dim=1).all()):
+            raise ValueError("模型 logits 包含 NaN、正无穷或没有合法 token")
         return torch.softmax(scores, dim=-1)
 
     def generate_batch(
@@ -386,6 +388,28 @@ class AutoregressiveBigram(AutoregressivePasswordModel):
 
         row = self.count[current_id].to(torch.float32)
         return (row + self.alpha) / (row.sum() + self.vocab_size * self.alpha)
+
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+        """按 `[B,L]` token 索引返回 `[B,L,V]` logits，支持无缓存搜索。"""
+
+        if input_ids.ndim != 2:
+            raise ValueError("input_ids 必须是 [B,L] 张量")
+        # 只计算实际输入对应的转移行，不跨调用缓存，count 修改后立即生效。
+        rows = self.count[input_ids.to(self.count.device)].float()
+        return torch.log(rows + self.alpha)
+
+    def log_probabilities(self, texts: Sequence[str]) -> torch.Tensor:
+        """用转移表批量评分，计入 EOS 并忽略 PAD，不构造 `[B,L,V]` 中间量。"""
+
+        values = list(texts)
+        if not values:
+            return torch.empty(0, dtype=torch.float32)
+        dataset = PasswordDataset(values, self.tokenizer)
+        inputs, targets = collate_batch(list(dataset), pad_id=self.pad_id)
+        smoothed = self.count.float() + self.alpha
+        log_probs = torch.log(smoothed / smoothed.sum(dim=-1, keepdim=True))
+        token_scores = log_probs[inputs, targets]
+        return token_scores.masked_fill(targets == self.pad_id, 0.0).sum(dim=-1)
 
     def log_probability(self, text: str) -> torch.Tensor:
         """计算从 BOS 到文本再到 EOS 的自然对数概率。"""
@@ -662,20 +686,8 @@ class AutoregressiveGRU(AutoregressivePasswordModel):
     def log_probabilities(self, texts: Sequence[str]) -> torch.Tensor:
         """使用 teacher-forcing batch 计算字符串序列的对数概率。"""
 
-        text_list = list(texts)
-        if not text_list:
-            return torch.empty(0, dtype=torch.float32, device=self.device)
-        dataset = PasswordDataset(text_list, self.tokenizer)
-        dataloader = torch.utils.data.DataLoader(
-            dataset,
-            batch_size=len(text_list),
-            shuffle=False,
-            collate_fn=lambda batch: collate_batch(batch, pad_id=self.pad_id),
-        )
-        input_ids, target_ids = next(iter(dataloader))
-        input_ids = input_ids.to(self.device)
-        target_ids = target_ids.to(self.device)
-        return self._log_probabilities_from_ids(input_ids, target_ids)
+        # 单个 batch 直接 padding，避免 DataLoader 迭代器消耗全局随机状态。
+        return _teacher_forcing_log_probabilities(self, texts)
 
     def log_probability(self, text: str) -> torch.Tensor:
         """计算单条密码包含 EOS 的自然对数概率。"""

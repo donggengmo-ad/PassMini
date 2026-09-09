@@ -134,7 +134,7 @@ if view == "Research Overview":
                     "Mean Bits / Token": item.mean_bits_per_token,
                     "Median Bits / Token": item.median_bits_per_token,
                     "P95 Bits / Token": item.p95_bits_per_token,
-                    "Perplexity": item.perplexity,
+                    "Sequence-balanced Perplexity": item.perplexity,
                     "Best Validation Loss": item.best_validation_loss,
                     "Best Epoch": item.best_epoch,
                     "Final Generalization Gap": item.generalization_gap,
@@ -184,9 +184,12 @@ if view == "Research Overview":
                     format="%.4f",
                     help="95% 测试密码的 Bits/Token 不超过该值，用于观察分布尾部。",
                 ),
-                "Perplexity": st.column_config.NumberColumn(
+                "Sequence-balanced Perplexity": st.column_config.NumberColumn(
                     format="%.3f",
-                    help="由 $2^{\\frac{Mean Bits}{Token}}$ 得到的平均分支复杂度；越低表示拟合越集中。",
+                    help=(
+                        "2 ** mean(每条密码的 Bits/Token)，每条密码等权。"
+                        "它是逐密码 perplexity 的几何平均，不是按所有 token 加权的 corpus perplexity。"
+                    ),
                 ),
                 "Best Validation Loss": st.column_config.NumberColumn(
                     format="%.4f",
@@ -225,7 +228,15 @@ if view == "Research Overview":
             width="stretch",
             persist_state="session",
         )
-        show_chart(plot_model_zoo(overviews, colors, zoo_metric))
+        label_mode = st.selectbox(
+            "Model labels", ["Focus", "All", "None"], key="zoo_labels",
+            help="Focus 仅显示悬停或图例选中的模型；All 显示全部标签；None 隐藏固定标签。",
+        )
+        st.subheader("Model Zoo", anchor=False)
+        try:
+            show_chart(plot_model_zoo(overviews, colors, zoo_metric, label_mode=label_mode))
+        except ValueError as error:
+            st.info(str(error))
         st.caption(
             "Model Zoo 横轴使用 batch size 为 1、sequence length 为 13 时的 "
             "Estimated FLOPs；圆点面积通过扩展后的 symlog 尺度编码 Parameters。"
@@ -293,8 +304,11 @@ elif view == "Surprisal":
         except ValueError as error:
             st.warning(str(error))
     if surprisal:
-        metric_cards = st.columns(min(4, len(surprisal)))
-        for column, (label, item) in zip(metric_cards, surprisal.items()):
+        # 每四个模型换行，避免 zip 截断后悄悄遗漏其余已装备模型。
+        for index, (label, item) in enumerate(surprisal.items()):
+            if index % 4 == 0:
+                metric_cards = st.columns(min(4, len(surprisal) - index))
+            column = metric_cards[index % 4]
             if label == "Selected Mean":
                 values = item.bits_per_token if normalized else item.surprisal_bits
                 value = float(np.mean(values))

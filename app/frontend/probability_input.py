@@ -88,7 +88,11 @@ def character_input(
 ) -> str:
     """挂载逐键更新的受控输入组件，并返回当前文本。"""
 
-    current_value = _state_value(st.session_state.get(key, {}), "")
+    # 非 widget 的备份键在切换页面后仍保留，回到实验时恢复输入。
+    backup_key = key + "_text"
+    current_value = _state_value(
+        st.session_state.get(key, {}), st.session_state.get(backup_key, "")
+    )
     result = _CHARACTER_INPUT(
         key=key,
         data={
@@ -102,7 +106,9 @@ def character_input(
         width="stretch",
         height="content",
     )
-    return result.value if isinstance(result.value, str) else current_value
+    value = result.value if isinstance(result.value, str) else current_value
+    st.session_state[backup_key] = value
+    return value
 
 
 def probability_color(probability: float) -> str:

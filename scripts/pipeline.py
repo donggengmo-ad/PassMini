@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 from dataclasses import asdict, dataclass
 from functools import partial
+from pathlib import Path
 import matplotlib.pyplot as plt
 import json
 import torchinfo
@@ -13,23 +14,15 @@ from torch.utils.data import DataLoader
 
 from .data import PasswordDataset, collate_batch, read_dataset
 from .experiment import (
-    AutoregressiveBigramConfig,
-    AutoregressiveGRUConfig,
-    AutoregressiveMLPConfig,
     AutoregressiveModelConfig,
-    AutoregressiveTCNConfig,
-    AutoregressiveTransformerConfig,
     ExperimentConfig,
 )
 from .inference import save_inference_config
 from .models import (
     AutoregressiveBigram,
-    AutoregressiveGRU,
-    AutoregressiveMLP,
     AutoregressivePasswordModel,
-    AutoregressiveTCN,
-    AutoregressiveTransformer,
 )
+from .model_factory import build_model_from_config
 from .monitoring import TensorBoardMonitor
 from .training import build_scheduler, train, evaluate, load_checkpoint
 from .tokenizer import CharTokenizer
@@ -104,43 +97,10 @@ def build_model(
     config: ExperimentConfig | AutoregressiveModelConfig,
     tokenizer: CharTokenizer,
 ) -> AutoregressivePasswordModel:
-    """根据 canonical 模型配置构造模型。"""
+    """接受实验配置或独立模型配置，委托统一工厂构造模型。"""
 
     model_config = config.model if isinstance(config, ExperimentConfig) else config
-    if isinstance(model_config, AutoregressiveBigramConfig):
-        return AutoregressiveBigram(tokenizer, alpha=model_config.alpha)
-    if isinstance(model_config, AutoregressiveMLPConfig):
-        return AutoregressiveMLP(
-            tokenizer,
-            tau=model_config.tau,
-            embedding_dim=model_config.embedding_dim,
-            hidden_size=model_config.hidden_size,
-        )
-    if isinstance(model_config, AutoregressiveGRUConfig):
-        return AutoregressiveGRU(
-            tokenizer,
-            embedding_dim=model_config.embedding_dim,
-            hidden_size=model_config.hidden_size,
-            num_layers=model_config.num_layers,
-        )
-    if isinstance(model_config, AutoregressiveTCNConfig):
-        return AutoregressiveTCN(
-            tokenizer,
-            embedding_dim=model_config.embedding_dim,
-            channels=model_config.channels,
-            kernel_size=model_config.kernel_size,
-            dilations=model_config.dilations,
-        )
-    if isinstance(model_config, AutoregressiveTransformerConfig):
-        return AutoregressiveTransformer(
-            tokenizer,
-            d_model=model_config.d_model,
-            nhead=model_config.nhead,
-            num_layers=model_config.num_layers,
-            dim_feedforward=model_config.dim_feedforward,
-            max_length=model_config.max_length,
-        )
-    raise TypeError(f"不支持的模型配置: {type(model_config).__name__}")
+    return build_model_from_config(model_config, tokenizer)
 
 
 def build_optimizer(
@@ -224,6 +184,8 @@ def run_training_experiment(
                 max(len(history["train_loss"]), 1),
                 flush=True,
             )
+        # Test Loss 属于最终导出的 best/latest 模型，写入独立历史供前端恢复。
+        history["test_loss"] = test_loss
         save_training_artifact(config, tokenizer, history)
         save_inference_artifact(config, model, tokenizer)
         return ExperimentArtifacts(config, tokenizer, model, history, test_loss)

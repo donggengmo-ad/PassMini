@@ -4,6 +4,7 @@ from pathlib import Path
 import hashlib
 import heapq
 import random
+from itertools import islice
 
 class PasswordDataset(torch.utils.data.Dataset):
     def __init__(self, passwords: list[str], tokenizer: CharTokenizer):
@@ -72,9 +73,7 @@ def count_lines(file_path: Path) -> int:
     :return: 文件中的行数
     """
     with open(file_path, "r", encoding="utf-8", errors="surrogateescape") as f:
-        for i, _ in enumerate(f, 1):
-            pass
-    return i
+        return sum(1 for _ in f)
 
 def prepare_dataset(
     source_path: Path,
@@ -181,11 +180,12 @@ def read_dataset(source_dir: Path,
     """
     dataset = {}
     for split, limit in [('train', train_limit), ('val', val_limit), ('test', test_limit)]:
+        if limit is not None and (not isinstance(limit, int) or limit < 0):
+            raise ValueError("split limit 必须是非负整数或 None")
         file_path = source_dir / f'{split}.txt'
         if not file_path.exists():
             raise FileNotFoundError(f"数据集文件 {file_path} 不存在。")
         with open(file_path, 'r', encoding='utf-8') as f:
-            dataset[split] = [line.rstrip('\n\r') for line in f]
-        if limit is not None:
-            dataset[split] = dataset[split][:limit]
+            # 有限样本冒烟测试只读取所需行，避免先把正式训练集全部装入内存。
+            dataset[split] = [line.rstrip('\n\r') for line in islice(f, limit)]
     return dataset

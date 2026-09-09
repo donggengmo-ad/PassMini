@@ -40,12 +40,15 @@ class CharacterProbability:
 
     character: str
     probability: float
+    log_probability: float | None = None
 
     @property
     def surprisal_bits(self) -> float:
         """将字符条件概率转换为该步贡献的惊讶度。"""
 
-        return -math.log2(self.probability)
+        if self.log_probability is not None:
+            return -self.log_probability / math.log(2.0)
+        return -math.log2(self.probability) if self.probability > 0 else math.inf
 
 
 @dataclass(frozen=True)
@@ -153,25 +156,6 @@ def plot_score_comparison(
     )
 
 
-def _generation_probabilities(
-    model: AutoregressivePasswordModel,
-    logits: torch.Tensor,
-    temperature: float = 1.0,
-) -> torch.Tensor:
-    """将一步 logits 转为生成概率，并屏蔽不可生成的特殊 token。"""
-
-    if logits.shape != (1, model.vocab_size):
-        raise ValueError("next_logits 必须是 [1, vocab_size] 张量")
-    if not math.isfinite(temperature) or temperature <= 0:
-        raise ValueError("temperature 必须是有限正数")
-    scores = logits.detach().clone()
-    invalid_ids = [model.pad_id, model.tokenizer.bos_id, model.tokenizer.unk_id]
-    scores[:, invalid_ids] = -torch.inf
-    if not torch.isfinite(scores).any():
-        raise ValueError("模型没有可展示的下一 token")
-    return torch.softmax(scores / temperature, dim=-1)
-
-
 def trace_character_probabilities(
     text: str,
     models: Mapping[str, RuntimeModel],
@@ -179,9 +163,42 @@ def trace_character_probabilities(
     max_length: int = 12,
     temperature: float = 1.0,
 ) -> list[ModelProbabilityTrace]:
+    """每个模型只前向一次，返回输入字符的概率轨迹和下一 token 候选。"""
+
+    return _trace_character_temperatures(
+        text, models, (temperature,), top_k, max_length
+    )[temperature]
+
+
+def trace_temperature_probabilities(
+    text: str,
+    models: Mapping[str, RuntimeModel],
+    temperatures: tuple[float, ...],
+    top_k: int = 8,
+    max_length: int = 12,
+) -> dict[float, ModelProbabilityTrace]:
+    """对一个模型只前向一次，复用 logits 比较多个温度；不跨会话缓存输入。"""
+
+    if len(models) != 1:
+        raise ValueError("Temperature Laboratory 必须选择一个模型")
+    return {
+        temperature: items[0]
+        for temperature, items in _trace_character_temperatures(
+            text, models, temperatures, top_k, max_length
+        ).items()
+    }
+
+
+def _trace_character_temperatures(
+    text: str,
+    models: Mapping[str, RuntimeModel],
+    temperatures: tuple[float, ...],
+    top_k: int,
+    max_length: int,
+) -> dict[float, list[ModelProbabilityTrace]]:
     """逐字符计算条件概率，并给出当前前缀之后的 Top-K token。
 
-    每个模型只消费一次 BOS，随后通过统一增量状态逐字符推进。第 i 个字符
+    每个模型用一次因果前向计算 BOS 和完整输入的所有位置。第 i 个字符
     的概率始终来自它出现之前的前缀，所以继续追加字符不会改变已经记录的
     颜色。PAD、BOS、UNK 不属于可生成候选；EOS 保留并显示为结束标记。
     """
@@ -193,7 +210,9 @@ def trace_character_probabilities(
     if top_k <= 0:
         raise ValueError("top_k 必须大于 0")
 
-    traces: list[ModelProbabilityTrace] = []
+    if not temperatures or any(not math.isfinite(t) or t <= 0 for t in temperatures):
+        raise ValueError("temperature 必须是有限正数")
+    traces = {temperature: [] for temperature in temperatures}
     with torch.inference_mode():
         for model_id, (model, tokenizer) in models.items():
             if not isinstance(model, AutoregressivePasswordModel):
@@ -202,48 +221,52 @@ def trace_character_probabilities(
                 raise ValueError(f"{model_id} 的模型与 tokenizer 不一致")
 
             model.eval()
-            state = model.initial_state(batch_size=1)
-            character_probabilities: list[CharacterProbability] = []
+            token_ids = []
             for character in text:
                 token_id = tokenizer.token_to_id.get(character)
                 if token_id is None or tokenizer.is_special_token(token_id):
                     raise ValueError(f"字符 {character!r} 不在 {model_id} 的可用词表中")
-                probabilities = _generation_probabilities(
-                    model, state.next_logits, temperature
-                )
-                character_probabilities.append(
+                token_ids.append(token_id)
+            # 因果模型一次前向就能还原每个历史位置的预测，避免 rerun 内逐字符推进。
+            inputs = torch.tensor([[tokenizer.bos_id, *token_ids]], device=model.device)
+            # 不同温度只改变概率变换，不改变模型 logits；一次前向后在 CPU 复用。
+            logits = model(inputs)[0].detach().double().cpu()
+            for temperature in temperatures:
+                scores = logits / temperature
+                invalid_ids = [tokenizer.pad_id, tokenizer.bos_id, tokenizer.unk_id]
+                scores[:, invalid_ids] = -torch.inf
+                if (torch.isnan(scores).any() or torch.isposinf(scores).any()
+                        or not torch.isfinite(scores).any(dim=-1).all()):
+                    raise ValueError("模型没有可展示的有效概率分布")
+                # 保留 log probability：即使 exp 下溢为 0，仍可准确绘制该字符的惊讶度。
+                log_probabilities = torch.log_softmax(scores, dim=-1).cpu()
+                character_probabilities = tuple(
                     CharacterProbability(
                         character=character,
-                        probability=float(probabilities[0, token_id].cpu()),
+                        probability=math.exp(float(log_probabilities[index, token_id])),
+                        log_probability=float(log_probabilities[index, token_id]),
+                    )
+                    for index, (character, token_id) in enumerate(zip(text, token_ids))
+                )
+                # 先排除特殊 token，再按分数稳定排序；概率下溢时也不会混入 PAD/UNK。
+                allowed = [i for i in range(tokenizer.vocab_size) if i not in invalid_ids]
+                ordered = sorted(allowed, key=lambda i: (-float(log_probabilities[-1, i]), i))
+                distribution = tuple(
+                    NextTokenPrediction(
+                        token="[EOS]" if token_id == tokenizer.eos_id else tokenizer.id_to_token[token_id],
+                        probability=math.exp(float(log_probabilities[-1, token_id])),
+                        is_eos=token_id == tokenizer.eos_id,
+                    )
+                    for token_id in ordered
+                )
+                traces[temperature].append(
+                    ModelProbabilityTrace(
+                        model_id=model_id,
+                        characters=character_probabilities,
+                        next_tokens=distribution[:top_k],
+                        distribution=distribution,
                     )
                 )
-                token = torch.tensor([token_id], dtype=torch.long, device=model.device)
-                state = model.advance_state(state, token)
-
-            next_probabilities = _generation_probabilities(
-                model, state.next_logits, temperature
-            )[0]
-            candidate_count = tokenizer.vocab_size - 3
-            values, token_ids = torch.topk(next_probabilities, k=candidate_count)
-            distribution = tuple(
-                NextTokenPrediction(
-                    token="[EOS]" if token_id == tokenizer.eos_id else tokenizer.id_to_token[token_id],
-                    probability=float(probability),
-                    is_eos=token_id == tokenizer.eos_id,
-                )
-                for probability, token_id in zip(
-                    values.detach().cpu().tolist(),
-                    token_ids.detach().cpu().tolist(),
-                )
-            )
-            traces.append(
-                ModelProbabilityTrace(
-                    model_id=model_id,
-                    characters=tuple(character_probabilities),
-                    next_tokens=distribution[:top_k],
-                    distribution=distribution,
-                )
-            )
     return traces
 
 
@@ -384,13 +407,19 @@ def plot_surprisal_journey(
                 alt.Tooltip("Step Surprisal:Q", format=".3f"),
             ],
         )
-        .properties(width=300, height=210)
-        .facet(
-            facet=alt.Facet("Model:N", sort=model_labels, title=None),
-            columns=2,
-        )
-        .properties(title="Character Surprisal Journey")
+        .properties(width="container", height=250)
     )
+    # 按模型纵向排列，每幅图跟随容器宽度；窄屏不再强制容纳两幅 300px 图。
+    step = alt.vconcat(*[
+        step.transform_filter(alt.datum.Model == label).encode(
+            color=alt.Color(
+                "Model:N",
+                scale=alt.Scale(domain=model_labels, range=[colors[i] for i in model_ids]),
+                legend=None,
+            )
+        ).properties(title=label)
+        for label in model_labels
+    ]).properties(title="Character Surprisal Journey")
     cumulative = (
         alt.Chart(frame)
         .mark_line(point=True)
@@ -399,7 +428,7 @@ def plot_surprisal_journey(
             y=alt.Y(
                 "Cumulative Surprisal:Q",
                 title="Cumulative Surprisal (bits)",
-                scale=alt.Scale(domainMin=0, zero=True),
+                scale=alt.Scale(zero=False),
             ),
             color=color,
             tooltip=[
@@ -409,7 +438,7 @@ def plot_surprisal_journey(
                 alt.Tooltip("Cumulative Surprisal:Q", format=".3f"),
             ],
         )
-        .properties(height=240)
+        .properties(height=440)
     )
     per_token = (
         alt.Chart(frame)
@@ -419,7 +448,7 @@ def plot_surprisal_journey(
             y=alt.Y(
                 "Surprisal per Token:Q",
                 title="Surprisal per Token (bits)",
-                scale=alt.Scale(domainMin=0, zero=True),
+                scale=alt.Scale(zero=False),
             ),
             color=color,
             tooltip=[
@@ -429,7 +458,7 @@ def plot_surprisal_journey(
                 alt.Tooltip("Surprisal per Token:Q", format=".3f"),
             ],
         )
-        .properties(title="Surprisal per Token", height=240)
+        .properties(title="Surprisal per Token", height=440)
     )
     return alt.vconcat(step, cumulative, per_token).resolve_scale(color="shared")
 

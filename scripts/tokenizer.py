@@ -23,11 +23,17 @@ class CharTokenizer:
         """
         # mapping tables
         self.id_to_token = tuple(id_to_token)
+        if self.id_to_token[:len(self.SPECIAL_TOKENS)] != self.SPECIAL_TOKENS:
+            raise ValueError("词表必须以 PAD、BOS、EOS、UNK 按固定顺序开始")
+        if any(not isinstance(token, str) or len(token) != 1
+               for token in self.id_to_token[len(self.SPECIAL_TOKENS):]):
+            raise ValueError("普通 token 必须是单个字符")
         self.token_to_id: dict[str, int] = {
             token: idx
             for idx, token in enumerate(self.id_to_token)
         }
-        assert (len(self.token_to_id) == len(self.id_to_token))
+        if len(self.token_to_id) != len(self.id_to_token):
+            raise ValueError("词表不能包含重复 token")
         self._special_tokens_border = len(self.SPECIAL_TOKENS) # special if lower than the borderer
 
     def __eq__(self, other: object) -> bool:
@@ -54,7 +60,8 @@ class CharTokenizer:
         r"""从 JSON 文件加载 tokenizer
         :param path: 文件路径
         """
-        id_to_token = json.load(path.open('r'))
+        with path.open('r', encoding='utf-8') as stream:
+            id_to_token = json.load(stream)
         return cls(id_to_token)
 
     def dump(self, path: Path):
@@ -62,7 +69,8 @@ class CharTokenizer:
         :param path: 保存路径
         """
         path.parent.mkdir(parents=True, exist_ok=True)
-        json.dump(self.id_to_token, path.open('w'))
+        with path.open('w', encoding='utf-8') as stream:
+            json.dump(self.id_to_token, stream)
 
     # 对齐 pytorch 的 state_dict 接口
     def state_dict(self) -> dict:
@@ -152,5 +160,4 @@ class CharTokenizer:
             if  0 <= idx < self.vocab_size:
                 chars.append(self.id_to_token[idx])
         return ''.join(chars)
-
 

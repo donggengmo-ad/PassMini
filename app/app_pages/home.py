@@ -10,7 +10,7 @@ catalog = load_catalog()
 records = selected_records(catalog)
 
 st.title("PassMini", anchor=False)
-st.write("字符级密码模型的训练结果、概率评测与小规模交互实验。")
+st.write("密码建模实验")
 
 with st.container(horizontal=True):
     st.metric(
@@ -42,7 +42,7 @@ with library:
     st.write("评估模型")
 with playground:
     st.subheader("Playground", anchor=False)
-    st.write("模型做交互游戏")
+    st.write("模型交互游戏")
 
 st.info(
     "不建议输入正在使用的真实密码。",

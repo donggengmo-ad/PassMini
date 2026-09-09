@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import random
+import tempfile
 import time
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
@@ -160,6 +162,25 @@ def _uniform_sample_indices(size: int, max_points: int) -> np.ndarray:
     return np.linspace(0, size - 1, num=max_points, dtype=np.int64)
 
 
+def _save_npz_atomic(path: Path, **arrays: np.ndarray) -> None:
+    """在同目录完整写入临时文件后替换目标，防止中断破坏上一份有效 NPZ。"""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".npz.tmp", delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            np.savez_compressed(stream, **arrays)
+            stream.flush()
+            os.fsync(stream.fileno())
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+    try:
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def save_surprisal_npz(
     path: str | Path,
     surprisal_bits: Sequence[float],
@@ -191,14 +212,12 @@ def save_surprisal_npz(
     # 两组分数复用同一组等距下标，保证导出后仍然逐项对应。
     indices = _uniform_sample_indices(raw_values.size, max_points)
     output_path = Path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("wb") as file:
-        np.savez_compressed(
-            file,
-            evaluation_size=np.asarray(raw_values.size, dtype=np.int64),
-            surprisal_bits=raw_values[indices],
-            bits_per_token=normalized_values[indices],
-        )
+    _save_npz_atomic(
+        output_path,
+        evaluation_size=np.asarray(raw_values.size, dtype=np.int64),
+        surprisal_bits=raw_values[indices],
+        bits_per_token=normalized_values[indices],
+    )
     return output_path
 
 
@@ -229,16 +248,16 @@ def save_coverage_npz(
         raise ValueError("attempts 必须为严格递增的正整数")
     if not np.isfinite(coverage).all() or np.any((coverage < 0) | (coverage > 1)):
         raise ValueError("coverage 必须是 [0, 1] 内的有限数值")
+    if np.any(np.diff(coverage) < 0):
+        raise ValueError("累计 coverage 不能下降")
 
     output_path = Path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("wb") as file:
-        np.savez_compressed(
-            file,
-            test_size=np.asarray(test_size, dtype=np.int64),
-            attempts=attempts,
-            coverage=coverage,
-        )
+    _save_npz_atomic(
+        output_path,
+        test_size=np.asarray(test_size, dtype=np.int64),
+        attempts=attempts,
+        coverage=coverage,
+    )
     return output_path
 
 
@@ -428,10 +447,10 @@ def evaluate_random_generation_with_coverage(
 
     函数逐 batch 生成并立即更新合法计数、不同合法密码集合、测试集命中集合
     和覆盖率检查点，不保存完整样本列表。这样质量指标与覆盖率仍严格来自同一批
-    随机样本，同时把主要内存规模从 `num_samples` 降到 `batch_size`。
+    随机样本，并将临时生成列表的规模从 `num_samples` 降到 `batch_size`。
 
     为精确计算合法唯一率，函数仍需保存所有不同合法密码；覆盖率曲线也会保存
-    `num_samples // checkpoint_step` 个检查点。因此极高多样性或过密检查点仍会
+    `ceil(num_samples / checkpoint_step)` 个检查点。因此极高多样性或过密检查点仍会
     消耗 CPU 内存，但不会再保留每一次重复采样得到的字符串。
     """
 
@@ -476,7 +495,7 @@ def evaluate_random_generation_with_coverage(
                 distinct_legal.add(password)
             if password in test_set:
                 seen_hits.add(password)
-            if completed % checkpoint_step == 0:
+            if completed % checkpoint_step == 0 or completed == num_samples:
                 coverage = len(seen_hits) / len(test_set)
                 points.append(
                     CoveragePoint(
@@ -692,7 +711,7 @@ def coverage_curve(
     :param candidates: 已按搜索顺序排列的生成候选
     :param test_passwords: 无重复的测试集密码序列
     :param checkpoint_step: 每隔多少次搜索记录一个检查点
-    :return: 从第 `checkpoint_step` 次开始的覆盖率检查点列表
+    :return: 固定步长及最后一次尝试的覆盖率检查点；非空候选始终包含终点
     :raise ValueError: 检查点非法、测试集为空/重复或候选重复
 
     候选和测试集都按字符串去重约束处理，但不会改变候选顺序。每个检查点
@@ -719,7 +738,7 @@ def coverage_curve(
         seen_candidates.add(text)
         if text in test_set:
             seen_hits.add(text)
-        if attempts % checkpoint_step == 0:
+        if attempts % checkpoint_step == 0 or attempts == len(candidates):
             # coverage 是累计命中比例；efficiency 保留搜索次数尺度，不换算为预算比例。
             coverage = len(seen_hits) / len(test_set)
             points.append(
@@ -742,7 +761,7 @@ def random_generation_coverage_curve(
     :param generated_passwords: 随机生成文本，可以包含重复值
     :param test_passwords: 无重复的测试集密码序列
     :param checkpoint_step: 每隔多少次采样记录一个检查点
-    :return: 从第 `checkpoint_step` 次开始的覆盖率检查点列表
+    :return: 固定步长及最后一次采样的覆盖率检查点；非空样本始终包含终点
 
     与搜索候选不同，随机采样允许重复；横轴仍然是实际采样次数，命中统计只对
     测试集密码去重。因此重复样本会消耗采样预算，但不会重复增加覆盖率。
@@ -764,7 +783,7 @@ def random_generation_coverage_curve(
     for attempts, password in enumerate(generated_passwords, start=1):
         if password in test_set:
             seen_hits.add(password)
-        if attempts % checkpoint_step == 0:
+        if attempts % checkpoint_step == 0 or attempts == len(generated_passwords):
             coverage = len(seen_hits) / len(test_set)
             points.append(
                 CoveragePoint(
